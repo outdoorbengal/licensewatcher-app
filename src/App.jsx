@@ -1,0 +1,874 @@
+import { useState, useEffect, useCallback, useMemo } from "react";
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GITHUB DATABASE LAYER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class GitHubDB {
+  constructor(token, repo, owner) {
+    this.token = token.replace(/[^\x20-\x7E]/g, "").trim();
+    this.repo = repo.trim();
+    this.owner = owner.trim();
+    this.base = `https://api.github.com/repos/${this.owner}/${this.repo}/contents`;
+    this.cache = {};
+    this.shas = {};
+  }
+  headers() {
+    return { Authorization: `Bearer ${this.token}`, Accept: "application/vnd.github.v3+json", "Content-Type": "application/json" };
+  }
+  async read(path) {
+    try {
+      const res = await fetch(`${this.base}/${path}`, { headers: this.headers() });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`GitHub read error: ${res.status}`);
+      const data = await res.json();
+      this.shas[path] = data.sha;
+      return JSON.parse(atob(data.content.replace(/\n/g, "")));
+    } catch (e) { console.error("GitHubDB read:", e); throw e; }
+  }
+  async write(path, data, message) {
+    try {
+      const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
+      const body = { message: message || `Update ${path}`, content };
+      if (this.shas[path]) body.sha = this.shas[path];
+      const res = await fetch(`${this.base}/${path}`, { method: "PUT", headers: this.headers(), body: JSON.stringify(body) });
+      if (!res.ok) { const err = await res.json(); throw new Error(`GitHub write error: ${res.status} — ${err.message}`); }
+      const result = await res.json();
+      this.shas[path] = result.content.sha;
+      return data;
+    } catch (e) { console.error("GitHubDB write:", e); throw e; }
+  }
+  async init() {
+    const files = { "data/registrations.json": [], "data/products.json": [], "data/state-offices.json": DEFAULT_STATES, "data/settings.json": { alertDays: 10, emailEnabled: true } };
+    for (const [path, def] of Object.entries(files)) { if ((await this.read(path)) === null) await this.write(path, def, `Initialize ${path}`); }
+  }
+  async testConnection() {
+    const res = await fetch(`https://api.github.com/repos/${this.owner}/${this.repo}`, { headers: this.headers() });
+    if (!res.ok) throw new Error(res.status === 404 ? "Repository not found — check the owner/repo and token access" : res.status === 401 ? "Invalid token" : res.status === 403 ? "Permission denied — needs Contents Read & Write" : `Error: ${res.status}`);
+    return await res.json();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ALL 50 STATES — blank templates for user to fill in
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const BLANK = { contact: "", email: "", phone: "", processingTime: "", fees: "", requirements: [], notes: "", registrationFormUrl: "", deadlines: [] };
+const DEFAULT_STATES = {
+  AL: { name: "Alabama", ...BLANK }, AK: { name: "Alaska", ...BLANK }, AZ: { name: "Arizona", ...BLANK },
+  AR: { name: "Arkansas", ...BLANK }, CA: { name: "California", ...BLANK }, CO: { name: "Colorado", ...BLANK },
+  CT: { name: "Connecticut", ...BLANK }, DE: { name: "Delaware", ...BLANK }, FL: { name: "Florida", ...BLANK },
+  GA: { name: "Georgia", ...BLANK }, HI: { name: "Hawaii", ...BLANK }, ID: { name: "Idaho", ...BLANK },
+  IL: { name: "Illinois", ...BLANK }, IN: { name: "Indiana", ...BLANK }, IA: { name: "Iowa", ...BLANK },
+  KS: { name: "Kansas", ...BLANK }, KY: { name: "Kentucky", ...BLANK }, LA: { name: "Louisiana", ...BLANK },
+  ME: { name: "Maine", ...BLANK }, MD: { name: "Maryland", ...BLANK }, MA: { name: "Massachusetts", ...BLANK },
+  MI: { name: "Michigan", ...BLANK }, MN: { name: "Minnesota", ...BLANK }, MS: { name: "Mississippi", ...BLANK },
+  MO: { name: "Missouri", ...BLANK }, MT: { name: "Montana", ...BLANK }, NE: { name: "Nebraska", ...BLANK },
+  NV: { name: "Nevada", ...BLANK }, NH: { name: "New Hampshire", ...BLANK }, NJ: { name: "New Jersey", ...BLANK },
+  NM: { name: "New Mexico", ...BLANK }, NY: { name: "New York", ...BLANK }, NC: { name: "North Carolina", ...BLANK },
+  ND: { name: "North Dakota", ...BLANK }, OH: { name: "Ohio", ...BLANK }, OK: { name: "Oklahoma", ...BLANK },
+  OR: { name: "Oregon", ...BLANK }, PA: { name: "Pennsylvania", ...BLANK }, RI: { name: "Rhode Island", ...BLANK },
+  SC: { name: "South Carolina", ...BLANK }, SD: { name: "South Dakota", ...BLANK }, TN: { name: "Tennessee", ...BLANK },
+  TX: { name: "Texas", ...BLANK }, UT: { name: "Utah", ...BLANK }, VT: { name: "Vermont", ...BLANK },
+  VA: { name: "Virginia", ...BLANK }, WA: { name: "Washington", ...BLANK }, WV: { name: "West Virginia", ...BLANK },
+  WI: { name: "Wisconsin", ...BLANK }, WY: { name: "Wyoming", ...BLANK }, DC: { name: "District of Columbia", ...BLANK },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COLORS & STYLES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const C = {
+  bg: "#F5F6F8", surface: "#FFFFFF", surfaceAlt: "#FAFBFC", border: "#E1E4EA", borderLight: "#ECEEF2",
+  text: "#171A1F", textSec: "#5B616E", textTri: "#8C93A0",
+  primary: "#2563EB", primaryHover: "#1D4ED8", primaryLight: "#EFF6FF", primaryFaint: "#F5F8FF",
+  teal: "#0D9488", tealLight: "#F0FDFA",
+  red: "#DC2626", redLight: "#FEF2F2", redBorder: "#FECACA",
+  orange: "#EA580C", orangeLight: "#FFF7ED", orangeBorder: "#FED7AA",
+  green: "#16A34A", greenLight: "#F0FDF4", greenBorder: "#BBF7D0",
+  purple: "#7C3AED", purpleLight: "#F5F3FF", purpleBorder: "#DDD6FE",
+  grey: "#6B7280", greyLight: "#F9FAFB", greyBorder: "#E5E7EB",
+};
+const S = {
+  card: { background: C.surface, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24 },
+  badge: (bg, fg, bd) => ({ display: "inline-flex", alignItems: "center", padding: "4px 10px", borderRadius: 20, fontSize: 12, fontWeight: 600, background: bg, color: fg, border: `1px solid ${bd}`, whiteSpace: "nowrap" }),
+  btn: (v = "primary") => ({ display: "inline-flex", alignItems: "center", gap: 8, padding: v === "sm" ? "6px 12px" : "10px 20px", borderRadius: 10, border: v === "outline" ? `1px solid ${C.border}` : "none", background: v === "primary" ? C.primary : v === "danger" ? C.red : "transparent", color: v === "primary" || v === "danger" ? "#fff" : C.text, fontSize: v === "sm" ? 12 : 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s" }),
+  input: { padding: "10px 14px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: "inherit", outline: "none", background: C.surface, color: C.text, width: "100%", boxSizing: "border-box" },
+  select: { padding: "10px 14px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: "inherit", outline: "none", background: C.surface, color: C.text, cursor: "pointer", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B616E' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center", paddingRight: 36 },
+};
+const statusCfg = { Pending: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, "In Review": { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Approved: { bg: C.greenLight, fg: C.green, bd: C.greenBorder }, Expired: { bg: C.greyLight, fg: C.grey, bd: C.greyBorder }, Rejected: { bg: C.redLight, fg: C.red, bd: C.redBorder } };
+const priorityCfg = { Critical: { bg: C.redLight, fg: C.red, bd: C.redBorder }, High: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, Medium: { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Low: { bg: C.greenLight, fg: C.green, bd: C.greenBorder } };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ICONS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const I = ({ n, s = 18, c = C.textSec, st = {} }) => {
+  const d = {
+    dashboard: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
+    list: <><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></>,
+    library: <><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></>,
+    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>,
+    alert: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
+    clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
+    check: <><polyline points="20 6 9 17 4 12"/></>,
+    x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+    upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,
+    file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></>,
+    plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+    search: <><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></>,
+    chevronRight: <><polyline points="9 18 15 12 9 6"/></>,
+    printer: <><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>,
+    mapPin: <><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></>,
+    dollar: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
+    trending: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
+    cat: <><path d="M12 5c-1.5-2.5-4-3-5-2s-1 3.5 0 5c-2 1-3 3-3 5 0 3.5 3.5 6 8 6s8-2.5 8-6c0-2-1-4-3-5 1-1.5 1-4 0-5s-3.5-.5-5 2z"/><circle cx="9.5" cy="13" r="1"/><circle cx="14.5" cy="13" r="1"/><path d="M10 16.5c.5.5 1.5 1 2 1s1.5-.5 2-1"/></>,
+    github: <><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></>,
+    trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
+    edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
+    zap: <><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></>,
+    shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></>,
+    download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
+    calendar: <><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></>,
+  };
+  return <svg width={s} height={s} viewBox="0 0 24 24" fill="none" stroke={c} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={st}>{d[n]}</svg>;
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SHARED COMPONENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Badge({ children, cfg }) { return <span style={S.badge(cfg.bg, cfg.fg, cfg.bd)}>{children}</span>; }
+function Progress({ cur, tot, size = "md" }) {
+  const pct = tot > 0 ? (cur / tot) * 100 : 0;
+  const clr = pct === 100 ? C.green : pct >= 50 ? C.primary : C.orange;
+  const h = size === "sm" ? 4 : 6;
+  return (<div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1, height: h, borderRadius: h, background: C.borderLight, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", borderRadius: h, background: clr, transition: "width 0.4s ease" }} /></div><span style={{ fontSize: 12, fontWeight: 600, color: clr, minWidth: 36, textAlign: "right" }}>{cur}/{tot}</span></div>);
+}
+function StatCard({ label, value, sub, icon, accent }) {
+  return (<div style={{ ...S.card, padding: 20, display: "flex", alignItems: "center", gap: 16, flex: 1, minWidth: 170 }}><div style={{ width: 44, height: 44, borderRadius: 12, background: accent + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><I n={icon} s={22} c={accent} /></div><div><div style={{ fontSize: 26, fontWeight: 700, color: C.text, lineHeight: 1.1 }}>{value}</div><div style={{ fontSize: 13, color: C.textSec, marginTop: 2 }}>{label}</div>{sub && <div style={{ fontSize: 11, color: accent, fontWeight: 600, marginTop: 2 }}>{sub}</div>}</div></div>);
+}
+function Modal({ open, onClose, title, children, width = 560 }) {
+  if (!open) return null;
+  return (<div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}><div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.35)", backdropFilter: "blur(4px)" }} /><div style={{ ...S.card, width, maxWidth: "92vw", maxHeight: "85vh", overflow: "auto", position: "relative", zIndex: 1, padding: 0 }} onClick={e => e.stopPropagation()}><div style={{ padding: "18px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, background: C.surface, zIndex: 2, borderRadius: "14px 14px 0 0" }}><h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>{title}</h3><button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><I n="x" s={20} c={C.textSec} /></button></div><div style={{ padding: 24 }}>{children}</div></div></div>);
+}
+function Toast({ message, type = "success", onDone }) {
+  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, [onDone]);
+  const bg = type === "success" ? C.green : type === "error" ? C.red : C.primary;
+  return (<div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 2000, background: bg, color: "#fff", padding: "12px 20px", borderRadius: 12, fontSize: 14, fontWeight: 600, boxShadow: "0 8px 32px rgba(0,0,0,0.18)", display: "flex", alignItems: "center", gap: 8, animation: "slideUp 0.3s ease" }}><I n={type === "success" ? "check" : "alert"} s={16} c="#fff" />{message}</div>);
+}
+function Spinner({ size = 20 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={C.primary} strokeWidth="2" style={{ animation: "spin 1s linear infinite" }}><path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" /></svg>;
+}
+function Field({ label, children, note }) {
+  return (<div style={{ marginBottom: 14 }}><label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 5 }}>{label}</label>{children}{note && <div style={{ fontSize: 11, color: C.textTri, marginTop: 3 }}>{note}</div>}</div>);
+}
+function FileUploadBtn({ label, fileName, onUpload }) {
+  return (<div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderRadius: 8, border: `1px solid ${fileName ? C.greenBorder : C.border}`, background: fileName ? C.greenLight : C.surface, marginBottom: 8 }}>
+    <div style={{ width: 22, height: 22, borderRadius: 11, border: `2px solid ${fileName ? C.green : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", background: fileName ? C.green : "transparent" }}>{fileName && <I n="check" s={14} c="#fff" />}</div>
+    <div style={{ flex: 1 }}><div style={{ fontWeight: 500, fontSize: 14 }}>{label}</div>{fileName && <div style={{ fontSize: 11, color: C.green }}>{fileName}</div>}</div>
+    <button onClick={onUpload} style={{ ...S.btn("outline"), padding: "5px 12px", fontSize: 12 }}><I n={fileName ? "check" : "upload"} s={14} c={C.textSec} /> {fileName ? "Replace" : "Upload"}</button>
+  </div>);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SETUP PAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function SetupPage({ onConnect }) {
+  const [token, setToken] = useState("");
+  const [owner, setOwner] = useState("");
+  const [repo, setRepo] = useState("licensewatcher-data");
+  const [testing, setTesting] = useState(false);
+  const [error, setError] = useState("");
+  const [step, setStep] = useState(1);
+  const sanitize = (v) => v.replace(/[^\x20-\x7E]/g, "").trim();
+  const handleTest = async () => {
+    setTesting(true); setError("");
+    try {
+      const ct = sanitize(token), co = sanitize(owner), cr = sanitize(repo);
+      if (!ct.startsWith("github_pat_") && !ct.startsWith("ghp_")) throw new Error("Token should start with github_pat_ or ghp_. Check for hidden chars from copy-paste.");
+      const db = new GitHubDB(ct, cr, co);
+      await db.testConnection(); setStep(2);
+      await db.init(); setStep(3);
+      setTimeout(() => onConnect({ token: ct, owner: co, repo: cr }), 800);
+    } catch (e) { setError(e.message); }
+    setTesting(false);
+  };
+  return (
+    <div style={{ minHeight: "100vh", background: `linear-gradient(135deg, ${C.bg} 0%, ${C.primaryFaint} 50%, ${C.bg} 100%)`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans', sans-serif", padding: 20 }}>
+      <div style={{ width: 520, animation: "fadeIn 0.5s ease" }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ width: 64, height: 64, borderRadius: 16, background: C.primary, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16, boxShadow: "0 8px 32px rgba(37,99,235,0.3)" }}><I n="cat" s={32} c="#fff" /></div>
+          <h1 style={{ margin: "0 0 6px", fontSize: 32, fontWeight: 800, color: C.text }}>LicenseWatcher</h1>
+          <p style={{ margin: 0, color: C.textSec, fontSize: 16 }}>Connect your GitHub repository to get started</p>
+        </div>
+        <div style={{ ...S.card, padding: 32 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}>
+            <div style={{ width: 40, height: 40, borderRadius: 10, background: C.text, display: "flex", alignItems: "center", justifyContent: "center" }}><I n="github" s={22} c="#fff" /></div>
+            <div><div style={{ fontWeight: 700, fontSize: 16 }}>GitHub Database Setup</div><div style={{ fontSize: 13, color: C.textSec }}>Data stored as JSON files in a private repo</div></div>
+          </div>
+          {step >= 2 && <div style={{ padding: "12px 16px", borderRadius: 10, background: C.greenLight, border: `1px solid ${C.greenBorder}`, marginBottom: 16, display: "flex", alignItems: "center", gap: 8, animation: "fadeIn 0.3s ease" }}><I n="check" s={16} c={C.green} /><span style={{ fontSize: 13, fontWeight: 600, color: C.green }}>Connected to {owner}/{repo}</span></div>}
+          {step >= 3 && <div style={{ padding: "12px 16px", borderRadius: 10, background: C.greenLight, border: `1px solid ${C.greenBorder}`, marginBottom: 16, display: "flex", alignItems: "center", gap: 8, animation: "fadeIn 0.3s ease" }}><I n="check" s={16} c={C.green} /><span style={{ fontSize: 13, fontWeight: 600, color: C.green }}>Data files initialized — launching app...</span></div>}
+          {step === 1 && (<>
+            <Field label="GitHub Personal Access Token *" note="Fine-grained token scoped to your data repo. Create at github.com/settings/tokens?type=beta"><input type="password" value={token} onChange={e => setToken(e.target.value)} placeholder="github_pat_xxxxxxxxxxxxxxxxxxxx" style={S.input} /></Field>
+            <div style={{ display: "flex", gap: 12 }}>
+              <Field label="GitHub Username / Org *"><input value={owner} onChange={e => setOwner(e.target.value)} placeholder="your-username" style={S.input} /></Field>
+              <Field label="Repository Name *"><input value={repo} onChange={e => setRepo(e.target.value)} placeholder="licensewatcher-data" style={S.input} /></Field>
+            </div>
+            {error && <div style={{ padding: "10px 14px", borderRadius: 8, background: C.redLight, border: `1px solid ${C.redBorder}`, marginBottom: 16, fontSize: 13, color: C.red, fontWeight: 500 }}>{error}</div>}
+            <button onClick={handleTest} disabled={!token || !owner || !repo || testing} style={{ ...S.btn("primary"), width: "100%", justifyContent: "center", opacity: (!token || !owner || !repo || testing) ? 0.5 : 1, marginTop: 4 }}>{testing ? <><Spinner size={16} /> Connecting...</> : <><I n="zap" s={16} c="#fff" /> Connect & Initialize</>}</button>
+          </>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD PAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function DashboardPage({ registrations, onNavigate, onAction }) {
+  const stats = useMemo(() => {
+    const t = registrations.length, ex = registrations.filter(r => r.daysLeft > 0 && r.daysLeft <= 30).length;
+    const ov = registrations.filter(r => r.daysLeft < 0).length, ap = registrations.filter(r => r.status === "Approved").length;
+    const inc = registrations.filter(r => r.uploadedDocs < r.totalDocs).length, rate = t > 0 ? Math.round((ap / t) * 100) : 0;
+    return { total: t, expiring: ex, overdue: ov, incomplete: inc, rate };
+  }, [registrations]);
+  const alerts = useMemo(() => registrations.filter(r => r.daysLeft < 10 || r.status === "Expired").sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 6), [registrations]);
+  const expiring = useMemo(() => registrations.filter(r => r.daysLeft > 0 && r.daysLeft <= 90 && r.status !== "Approved").sort((a, b) => a.daysLeft - b.daysLeft).slice(0, 5), [registrations]);
+  const incomplete = useMemo(() => registrations.filter(r => r.uploadedDocs < r.totalDocs).sort((a, b) => (a.uploadedDocs / a.totalDocs) - (b.uploadedDocs / b.totalDocs)).slice(0, 5), [registrations]);
+
+  if (registrations.length === 0) return (
+    <div><h1 style={{ margin: "0 0 4px", fontSize: 28, fontWeight: 800 }}>Dashboard</h1><p style={{ margin: "0 0 32px", color: C.textSec }}>Monitor your state feed registrations</p>
+      <div style={{ ...S.card, textAlign: "center", padding: 60 }}><div style={{ width: 64, height: 64, borderRadius: 16, background: C.primaryLight, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}><I n="cat" s={32} c={C.primary} /></div><h2 style={{ margin: "0 0 8px", fontSize: 20, fontWeight: 700 }}>No Registrations Yet</h2><p style={{ margin: "0 0 20px", color: C.textSec }}>Start by populating your State Library, then register your first product.</p><button onClick={() => onNavigate("library")} style={S.btn("primary")}><I n="library" s={16} c="#fff" /> Go to State Library</button></div></div>
+  );
+  return (
+    <div>
+      <div style={{ marginBottom: 28 }}><h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>Dashboard</h1><p style={{ margin: "4px 0 0", color: C.textSec, fontSize: 15 }}>Monitor your state feed registrations and compliance status</p></div>
+      <div style={{ display: "flex", gap: 14, marginBottom: 24, flexWrap: "wrap" }}>
+        <StatCard label="Total Registrations" value={stats.total} icon="list" accent={C.primary} />
+        <StatCard label="Expiring Soon" value={stats.expiring} sub="Next 30 days" icon="clock" accent={C.orange} />
+        <StatCard label="Overdue" value={stats.overdue} sub="Requires attention" icon="alert" accent={C.red} />
+        <StatCard label="Docs Incomplete" value={stats.incomplete} sub="Missing files" icon="file" accent={C.purple} />
+        <StatCard label="Approval Rate" value={`${stats.rate}%`} icon="trending" accent={C.teal} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 }}>
+        <div style={S.card}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><I n="alert" s={18} c={C.red} /><h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Priority Alerts</h3></div>
+          <p style={{ margin: "0 0 16px", fontSize: 13, color: C.textSec }}>Overdue or expiring within 10 days</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {alerts.length === 0 && <p style={{ color: C.textTri, fontSize: 14, textAlign: "center", padding: 20 }}>No alerts — all caught up!</p>}
+            {alerts.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, background: r.daysLeft < 0 ? C.redLight : C.orangeLight, border: `1px solid ${r.daysLeft < 0 ? C.redBorder : C.orangeBorder}` }}><I n="cat" s={18} c={r.daysLeft < 0 ? C.red : C.orange} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.productName}</div><div style={{ fontSize: 12, color: C.textSec }}>{r.stateName}{r.nearestDeadlineLabel ? ` • ${r.nearestDeadlineLabel}` : ""}</div></div><Badge cfg={r.daysLeft < 0 ? priorityCfg.Critical : priorityCfg.High}>{r.daysLeft < 0 ? `${Math.abs(r.daysLeft)}d overdue` : `${r.daysLeft}d left`}</Badge><button onClick={() => onAction(r)} style={{ ...S.btn("outline"), padding: "6px 14px", fontSize: 12 }}>Action</button></div>))}
+          </div>
+        </div>
+        <div style={S.card}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><I n="clock" s={18} c={C.orange} /><h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Expiring Soon</h3></div>
+          <p style={{ margin: "0 0 16px", fontSize: 13, color: C.textSec }}>Upcoming registration expirations</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {expiring.length === 0 && <p style={{ color: C.textTri, fontSize: 14, textAlign: "center", padding: 20 }}>Nothing expiring soon.</p>}
+            {expiring.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 10, border: `1px solid ${C.borderLight}`, background: C.bg }}><I n="cat" s={18} c={C.textSec} /><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{r.productName}</div><div style={{ fontSize: 12, color: C.textSec }}>{r.stateName}</div></div><div style={{ textAlign: "right" }}><div style={{ fontSize: 13, fontWeight: 700, color: r.daysLeft < 15 ? C.orange : C.textSec }}>{r.daysLeft} days</div><div style={{ fontSize: 11, color: C.textTri }}>{r.deadline}</div></div></div>))}
+          </div>
+        </div>
+      </div>
+      <div style={S.card}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div><div style={{ display: "flex", alignItems: "center", gap: 8 }}><I n="file" s={18} c={C.purple} /><h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Document Completeness</h3></div><p style={{ margin: "4px 0 0", fontSize: 13, color: C.textSec }}>Registrations with missing documents</p></div>
+          <button onClick={() => onNavigate("registrations")} style={{ ...S.btn("outline"), fontSize: 13, padding: "8px 16px" }}>View All</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {incomplete.length === 0 && <p style={{ color: C.textTri, fontSize: 14, textAlign: "center", padding: 16 }}>All documents complete!</p>}
+          {incomplete.map(r => (<div key={r.id} style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 16px", borderRadius: 10, border: `1px solid ${C.borderLight}` }}><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{r.productName}</div><div style={{ fontSize: 12, color: C.textSec }}>{r.stateName}</div></div><div style={{ width: 180 }}><Progress cur={r.uploadedDocs} tot={r.totalDocs} /></div><button onClick={() => onAction(r)} style={{ ...S.btn("outline"), padding: "6px 14px", fontSize: 12 }}>Upload</button></div>))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REGISTRATIONS TABLE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function RegistrationsPage({ registrations, stateReqs, onAction, onNewReg, onDelete }) {
+  const [search, setSearch] = useState(""); const [fState, setFState] = useState(""); const [fStatus, setFStatus] = useState(""); const [fPriority, setFPriority] = useState(""); const [sortBy, setSortBy] = useState("deadline");
+  const filtered = useMemo(() => {
+    let r = [...registrations];
+    if (search) r = r.filter(x => x.productName.toLowerCase().includes(search.toLowerCase()) || x.stateName.toLowerCase().includes(search.toLowerCase()));
+    if (fState) r = r.filter(x => x.state === fState); if (fStatus) r = r.filter(x => x.status === fStatus); if (fPriority) r = r.filter(x => x.priority === fPriority);
+    r.sort((a, b) => sortBy === "deadline" ? a.daysLeft - b.daysLeft : sortBy === "name" ? a.productName.localeCompare(b.productName) : a.status.localeCompare(b.status));
+    return r;
+  }, [registrations, search, fState, fStatus, fPriority, sortBy]);
+  const states = [...new Set(registrations.map(r => r.state))].sort();
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <div><h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>All Registrations</h1><p style={{ margin: "4px 0 0", color: C.textSec, fontSize: 15 }}>Manage and track all your state feed registrations</p></div>
+        <button onClick={onNewReg} style={S.btn("primary")}><I n="plus" s={16} c="#fff" /> Register New Product</button>
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative", flex: "1 1 220px", maxWidth: 300 }}><I n="search" s={16} c={C.textTri} st={{ position: "absolute", left: 12, top: 12 }} /><input placeholder="Search registrations..." value={search} onChange={e => setSearch(e.target.value)} style={{ ...S.input, paddingLeft: 36 }} /></div>
+        <select value={fState} onChange={e => setFState(e.target.value)} style={{ ...S.select, width: 150 }}><option value="">All States</option>{states.map(s => <option key={s} value={s}>{stateReqs[s]?.name || s}</option>)}</select>
+        <select value={fStatus} onChange={e => setFStatus(e.target.value)} style={{ ...S.select, width: 140 }}><option value="">All Statuses</option>{Object.keys(statusCfg).map(s => <option key={s}>{s}</option>)}</select>
+        <select value={fPriority} onChange={e => setFPriority(e.target.value)} style={{ ...S.select, width: 140 }}><option value="">All Priorities</option>{Object.keys(priorityCfg).map(p => <option key={p}>{p}</option>)}</select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value)} style={{ ...S.select, width: 150 }}><option value="deadline">Sort: Deadline</option><option value="name">Sort: Name</option><option value="status">Sort: Status</option></select>
+      </div>
+      <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead><tr style={{ borderBottom: `2px solid ${C.border}` }}>{["Product", "State", "Type", "Status", "Deadline", "Priority", "Docs", "Actions"].map(h => <th key={h} style={{ padding: "14px 16px", textAlign: "left", fontWeight: 700, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.5, color: C.textSec, background: C.bg }}>{h}</th>)}</tr></thead>
+          <tbody>{filtered.map((r, i) => (
+            <tr key={r.id} style={{ borderBottom: `1px solid ${C.borderLight}`, background: i % 2 === 0 ? C.surface : C.bg }}>
+              <td style={{ padding: "12px 16px", fontWeight: 600 }}>{r.productName}</td>
+              <td style={{ padding: "12px 16px" }}><span style={{ fontWeight: 600 }}>{r.state}</span> <span style={{ color: C.textTri, fontSize: 12 }}>{r.stateName}</span></td>
+              <td style={{ padding: "12px 16px", color: C.textSec }}>{r.productType}</td>
+              <td style={{ padding: "12px 16px" }}><Badge cfg={statusCfg[r.status]}>{r.status}</Badge></td>
+              <td style={{ padding: "12px 16px" }}><div style={{ fontWeight: 500 }}>{r.nearestDeadlineLabel || r.deadline || "—"}</div>{r.daysLeft < 999 && <div style={{ fontSize: 11, fontWeight: 600, color: r.daysLeft < 0 ? C.red : r.daysLeft < 10 ? C.orange : C.textTri }}>{r.daysLeft < 0 ? `${Math.abs(r.daysLeft)}d overdue` : `${r.daysLeft}d left`}</div>}</td>
+              <td style={{ padding: "12px 16px" }}><Badge cfg={priorityCfg[r.priority]}>{r.priority}</Badge></td>
+              <td style={{ padding: "12px 16px", width: 140 }}><Progress cur={r.uploadedDocs} tot={r.totalDocs} size="sm" /></td>
+              <td style={{ padding: "12px 16px" }}><div style={{ display: "flex", gap: 6 }}><button onClick={() => onAction(r)} style={{ ...S.btn("outline"), padding: "5px 12px", fontSize: 12 }}>Action</button><button onClick={() => onDelete(r.id)} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}><I n="trash" s={15} c={C.textTri} /></button></div></td>
+            </tr>))}</tbody>
+        </table>
+        {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: C.textTri }}>{registrations.length === 0 ? "No registrations yet." : "No registrations match your filters."}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATE LIBRARY PAGE — fully editable
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving }) {
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [newReq, setNewReq] = useState("");
+
+  const entries = Object.entries(stateReqs).filter(([c, s]) => !search || s.name.toLowerCase().includes(search.toLowerCase()) || c.toLowerCase().includes(search.toLowerCase()));
+  const filled = entries.filter(([, s]) => s.contact || s.email);
+  const empty = entries.filter(([, s]) => !s.contact && !s.email);
+
+  const startEdit = (code) => {
+    setEditing(code);
+    setForm({ ...stateReqs[code] });
+    setNewReq("");
+  };
+  const updateForm = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
+  const addReq = () => { if (newReq.trim()) { setForm(prev => ({ ...prev, requirements: [...(prev.requirements || []), newReq.trim()] })); setNewReq(""); } };
+  const removeReq = (idx) => setForm(prev => ({ ...prev, requirements: prev.requirements.filter((_, i) => i !== idx) }));
+  const handleSave = () => { onSaveState(editing, form); setEditing(null); };
+
+  // Download template — serves the pre-built XLSX from /state_offices_template.xlsx in public/
+  const downloadTemplate = () => {
+    window.open("/state_offices_template.xlsx", "_blank");
+  };
+
+  // XLSX Upload using SheetJS
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data);
+      const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes("state")) || workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+      if (rows.length < 2) return;
+
+      // Find header row (first row with "State Code" in column A)
+      let headerIdx = 0;
+      for (let i = 0; i < Math.min(rows.length, 5); i++) {
+        if (String(rows[i]?.[0] || "").toLowerCase().includes("state code")) { headerIdx = i; break; }
+      }
+
+      const updated = { ...stateReqs };
+      for (let i = headerIdx + 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || !r[0]) continue;
+        const code = String(r[0]).trim().toUpperCase();
+        if (!updated[code]) continue;
+        const val = (idx) => r[idx] != null ? String(r[idx]).trim() : "";
+        updated[code] = {
+          ...updated[code],
+          contact: val(2) || updated[code].contact || "",
+          email: val(3) || updated[code].email || "",
+          phone: val(4) || updated[code].phone || "",
+          fees: val(5) || updated[code].fees || "",
+          processingTime: val(6) || updated[code].processingTime || "",
+          tonnageDeadline: val(7) || updated[code].tonnageDeadline || "",
+          renewalDeadline: val(8) || updated[code].renewalDeadline || "",
+          renewalPeriod: val(9) || updated[code].renewalPeriod || "",
+          tonnageFrequency: val(10) || updated[code].tonnageFrequency || "",
+          requirements: val(11) ? val(11).split(";").map(s => s.trim()).filter(Boolean) : updated[code].requirements || [],
+          registrationFormUrl: val(12) || updated[code].registrationFormUrl || "",
+          notes: val(13) || updated[code].notes || "",
+        };
+      }
+      onBulkSave(updated);
+    } catch (err) { console.error("XLSX parse error:", err); alert("Error parsing file. Please use the .xlsx template from Download Template."); }
+    e.target.value = "";
+  };
+
+  const StateCard = ({ code, st }) => {
+    const hasForms = st.registrationFormUrl;
+    const hasData = st.contact || st.email;
+    return (
+      <div style={{ ...S.card, cursor: "pointer", transition: "box-shadow 0.15s, transform 0.15s", position: "relative" }} onClick={() => startEdit(code)} onMouseEnter={e => { e.currentTarget.style.boxShadow = "0 4px 20px rgba(0,0,0,0.07)"; e.currentTarget.style.transform = "translateY(-2px)"; }} onMouseLeave={e => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "none"; }}>
+        <div style={{ position: "absolute", top: 12, right: 12 }}><I n="edit" s={15} c={C.textTri} /></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: hasData ? 14 : 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.primary, background: C.primaryLight, padding: "4px 10px", borderRadius: 6 }}>{code}</span>
+          <span style={{ fontSize: 17, fontWeight: 700 }}>{st.name}</span>
+        </div>
+        {!hasData && <div style={{ fontSize: 13, color: C.textTri, fontStyle: "italic", padding: "8px 0" }}>Not configured yet — click to add info</div>}
+        {hasData && (<>
+          <div style={{ fontSize: 11, color: C.textTri, textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5, marginBottom: 4 }}>Contact</div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 2 }}>{st.contact}</div>
+          {st.email && <div style={{ fontSize: 13, color: C.primary, marginBottom: 2 }}>{st.email}</div>}
+          {st.phone && <div style={{ fontSize: 13, color: C.textSec, marginBottom: 10 }}>{st.phone}</div>}
+          <div style={{ display: "flex", gap: 20, marginBottom: 10 }}>
+            {st.processingTime && <div><div style={{ fontSize: 11, color: C.textTri, fontWeight: 600 }}>Processing</div><div style={{ fontSize: 13, fontWeight: 600 }}>{st.processingTime}</div></div>}
+            {st.fees && <div><div style={{ fontSize: 11, color: C.textTri, fontWeight: 600 }}>Fees</div><div style={{ fontSize: 13, fontWeight: 600 }}>{st.fees}</div></div>}
+          </div>
+          {st.deadlines?.length > 0 && <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            {st.deadlines.filter(d => d.title).map((d, i) => {
+              const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+              return <div key={i} style={{ fontSize: 12, padding: "4px 10px", borderRadius: 6, background: C.orangeLight, border: `1px solid ${C.orangeBorder}`, display: "flex", alignItems: "center", gap: 4 }}><I n="calendar" s={11} c={C.orange} /><span style={{ fontWeight: 600, color: C.orange }}>{d.title}</span><span style={{ color: C.textSec }}>{months[d.month - 1]} {d.day}</span></div>;
+            })}
+          </div>}
+          {st.requirements?.length > 0 && (<><div style={{ fontSize: 11, color: C.textTri, textTransform: "uppercase", fontWeight: 600, letterSpacing: 0.5, marginBottom: 6 }}>Required Documents</div><div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{st.requirements.map(req => <span key={req} style={{ ...S.badge(C.tealLight, C.teal, C.teal + "30"), fontSize: 11, padding: "3px 8px" }}>{req}</span>)}</div></>)}
+          {hasForms && <a href={st.registrationFormUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} style={{ marginTop: 8, fontSize: 12, color: C.primary, display: "flex", alignItems: "center", gap: 4, textDecoration: "none" }}><I n="download" s={12} c={C.primary} /> Download registration form</a>}
+          {st.notes && <div style={{ marginTop: 10, fontSize: 12, color: C.textSec, fontStyle: "italic", padding: "8px 10px", background: C.bg, borderRadius: 8 }}>{st.notes}</div>}
+        </>)}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
+        <div><h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>State Offices Library</h1><p style={{ margin: "4px 0 0", color: C.textSec, fontSize: 15 }}>Contact info, requirements, deadlines, and forms for each state — click any card to edit</p></div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button onClick={downloadTemplate} style={S.btn("outline")}><I n="download" s={16} c={C.textSec} /> Download Template</button>
+          <label style={{ ...S.btn("primary"), cursor: "pointer" }}><I n="upload" s={16} c="#fff" /> Upload XLSX<input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} style={{ display: "none" }} /></label>
+        </div>
+      </div>
+      <div style={{ position: "relative", maxWidth: 400, marginBottom: 24 }}><I n="search" s={16} c={C.textTri} st={{ position: "absolute", left: 12, top: 12 }} /><input placeholder="Search states..." value={search} onChange={e => setSearch(e.target.value)} style={{ ...S.input, paddingLeft: 36 }} /></div>
+
+      {filled.length > 0 && (<><div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, color: C.textTri, marginBottom: 12 }}>Configured ({filled.length})</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 16, marginBottom: 28 }}>{filled.map(([code, st]) => <StateCard key={code} code={code} st={st} />)}</div></>)}
+
+      {empty.length > 0 && (<><div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, color: C.textTri, marginBottom: 12 }}>Not Yet Configured ({empty.length})</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(330px, 1fr))", gap: 16 }}>{empty.map(([code, st]) => <StateCard key={code} code={code} st={st} />)}</div></>)}
+
+      {/* Edit Modal */}
+      <Modal open={!!editing} onClose={() => setEditing(null)} title={editing ? `Edit ${editing} — ${form.name}` : ""} width={640}>
+        {editing && (<div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Contact Name"><input value={form.contact || ""} onChange={e => updateForm("contact", e.target.value)} placeholder="Dr. Jane Smith" style={S.input} /></Field>
+            <Field label="Phone"><input value={form.phone || ""} onChange={e => updateForm("phone", e.target.value)} placeholder="(555) 123-4567" style={S.input} /></Field>
+          </div>
+          <Field label="Email"><input value={form.email || ""} onChange={e => updateForm("email", e.target.value)} placeholder="feed@state.gov" style={S.input} /></Field>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="Processing Time"><input value={form.processingTime || ""} onChange={e => updateForm("processingTime", e.target.value)} placeholder="30-45 days" style={S.input} /></Field>
+            <Field label="Fees"><input value={form.fees || ""} onChange={e => updateForm("fees", e.target.value)} placeholder="$50-$200" style={S.input} /></Field>
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <label style={{ fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}><I n="calendar" s={14} c={C.orange} /> Deadlines <span style={{ fontSize: 11, color: C.textTri, fontWeight: 400 }}>({(form.deadlines || []).length}/5)</span></label>
+              {(form.deadlines || []).length < 5 && <button onClick={() => updateForm("deadlines", [...(form.deadlines || []), { title: "", month: 1, day: 1 }])} style={{ ...S.btn("outline"), padding: "4px 10px", fontSize: 12 }}><I n="plus" s={12} c={C.textSec} /> Add</button>}
+            </div>
+            {(form.deadlines || []).length === 0 && <div style={{ fontSize: 13, color: C.textTri, fontStyle: "italic", padding: "8px 0" }}>No deadlines set. Add up to 5 recurring deadlines.</div>}
+            {(form.deadlines || []).map((dl, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderRadius: 8, border: `1px solid ${C.borderLight}`, marginBottom: 6, background: C.surfaceAlt }}>
+                <input value={dl.title} onChange={e => { const d = [...form.deadlines]; d[i] = { ...d[i], title: e.target.value }; updateForm("deadlines", d); }} placeholder="e.g. License Renewal" style={{ ...S.input, flex: 1, padding: "8px 10px", fontSize: 13 }} />
+                <select value={dl.month} onChange={e => { const d = [...form.deadlines]; d[i] = { ...d[i], month: parseInt(e.target.value) }; updateForm("deadlines", d); }} style={{ ...S.select, width: 110, padding: "8px 30px 8px 10px", fontSize: 13 }}>
+                  {["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].map((m, mi) => <option key={mi} value={mi + 1}>{m}</option>)}
+                </select>
+                <select value={dl.day} onChange={e => { const d = [...form.deadlines]; d[i] = { ...d[i], day: parseInt(e.target.value) }; updateForm("deadlines", d); }} style={{ ...S.select, width: 70, padding: "8px 30px 8px 10px", fontSize: 13 }}>
+                  {Array.from({ length: 31 }, (_, k) => k + 1).map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <button onClick={() => { const d = [...form.deadlines]; d.splice(i, 1); updateForm("deadlines", d); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><I n="x" s={14} c={C.red} /></button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>Required Documents</label>
+            {(form.requirements || []).map((req, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.borderLight}`, marginBottom: 6 }}>
+                <I n="file" s={14} c={C.teal} /><span style={{ flex: 1, fontSize: 14 }}>{req}</span>
+                <button onClick={() => removeReq(i)} style={{ background: "none", border: "none", cursor: "pointer", padding: 2 }}><I n="x" s={14} c={C.red} /></button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8 }}>
+              <input value={newReq} onChange={e => setNewReq(e.target.value)} onKeyDown={e => e.key === "Enter" && addReq()} placeholder="Add a required document..." style={{ ...S.input, flex: 1 }} />
+              <button onClick={addReq} style={{ ...S.btn("outline"), padding: "8px 14px" }}><I n="plus" s={14} c={C.textSec} /> Add</button>
+            </div>
+          </div>
+
+          <Field label="Registration Form URL" note="Link to the state's registration form PDF">
+            <input value={form.registrationFormUrl || ""} onChange={e => updateForm("registrationFormUrl", e.target.value)} placeholder="https://state.gov/feed-registration-form.pdf" style={S.input} />
+          </Field>
+
+          <Field label="Notes"><textarea value={form.notes || ""} onChange={e => updateForm("notes", e.target.value)} placeholder="Any notes about this state's requirements..." rows={3} style={{ ...S.input, resize: "vertical" }} /></Field>
+
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+            <button onClick={() => setEditing(null)} style={S.btn("outline")}>Cancel</button>
+            <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>{saving ? <><Spinner size={16} /> Saving...</> : "Save to GitHub"}</button>
+          </div>
+        </div>)}
+      </Modal>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SETTINGS PAGE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function SettingsPage({ settings, onSave, products, config, saving }) {
+  const [alertDays, setAlertDays] = useState(String(settings.alertDays || 10));
+  const [emailEnabled, setEmailEnabled] = useState(settings.emailEnabled !== false);
+  const handleSave = () => onSave({ ...settings, alertDays: parseInt(alertDays) || 10, emailEnabled });
+  return (
+    <div>
+      <h1 style={{ margin: "0 0 4px", fontSize: 28, fontWeight: 800 }}>Settings</h1><p style={{ margin: "0 0 28px", color: C.textSec }}>Configure alerts, notifications, and preferences</p>
+      <div style={{ maxWidth: 600 }}>
+        <div style={{ ...S.card, marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><I n="github" s={18} c={C.text} /><h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>GitHub Connection</h3></div>
+          <p style={{ margin: "0 0 12px", color: C.textSec, fontSize: 13 }}>Your data repository</p>
+          <div style={{ padding: "10px 14px", borderRadius: 8, background: C.greenLight, border: `1px solid ${C.greenBorder}`, display: "flex", alignItems: "center", gap: 8 }}><I n="check" s={16} c={C.green} /><span style={{ fontSize: 13, fontWeight: 600, color: C.green }}>Connected to {config.owner}/{config.repo}</span></div>
+        </div>
+        <div style={{ ...S.card, marginBottom: 20 }}>
+          <Field label="Days before deadline to trigger alert"><input type="number" value={alertDays} onChange={e => setAlertDays(e.target.value)} style={{ ...S.input, width: 120 }} /></Field>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
+            <div onClick={() => setEmailEnabled(!emailEnabled)} style={{ width: 44, height: 24, borderRadius: 12, background: emailEnabled ? C.primary : C.border, cursor: "pointer", position: "relative", transition: "background 0.2s" }}><div style={{ width: 18, height: 18, borderRadius: 9, background: "#fff", position: "absolute", top: 3, left: emailEnabled ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} /></div>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>Email alerts for approaching deadlines</span>
+          </div>
+        </div>
+        <div style={{ ...S.card, marginBottom: 20 }}>
+          <h3 style={{ margin: "0 0 12px", fontSize: 16, fontWeight: 700 }}>Products</h3>
+          {products.length === 0 && <p style={{ color: C.textTri, fontSize: 14 }}>No products registered yet.</p>}
+          {products.map((p, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", borderRadius: 8, border: `1px solid ${C.borderLight}`, marginBottom: 8 }}><I n="cat" s={18} c={C.primary} /><div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div><div style={{ fontSize: 12, color: C.textSec }}>{p.type}{p.labelFile ? " • Label uploaded" : ""}{p.gaFile ? " • GA uploaded" : ""}</div></div></div>))}
+        </div>
+        <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>{saving ? <><Spinner size={16} /> Saving...</> : "Save Settings"}</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACTION MODAL — per-registration actions
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function ActionModal({ reg, open, onClose, onUpdate, stateReqs, saving }) {
+  const [docs, setDocs] = useState([]);
+  const [status, setStatus] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [notes, setNotes] = useState("");
+
+  useEffect(() => { if (reg) { setDocs(reg.documents?.map(d => ({ ...d })) || []); setStatus(reg.status); setDeadline(reg.deadline || ""); setNotes(reg.notes || ""); } }, [reg]);
+  if (!reg) return null;
+  const st = stateReqs[reg.state];
+  const handleUpload = (idx) => { const u = [...docs]; u[idx] = { ...u[idx], uploaded: true, file: `${u[idx].name.toLowerCase().replace(/\s/g, "_")}.pdf` }; setDocs(u); };
+  const handleSave = () => { const ct = docs.filter(d => d.uploaded).length; onUpdate({ ...reg, documents: docs, uploadedDocs: ct, status, deadline, notes }); };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Registration Action" width={620}>
+      <div style={{ marginBottom: 16, fontSize: 14, color: C.textSec }}>Manage <strong>{reg.productName}</strong> in <strong>{reg.stateName}</strong></div>
+      {st && st.contact && (<div style={{ padding: 16, borderRadius: 10, border: `1px solid ${C.borderLight}`, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><I n="mapPin" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>State Office</span></div>
+        <div style={{ fontSize: 14, color: C.textSec, lineHeight: 1.6 }}>{st.contact}<br />{st.email} • {st.phone}</div>
+        {st.fees && <div style={{ marginTop: 8, fontSize: 14 }}>Fees: <strong>{st.fees}</strong></div>}
+        {st.registrationFormUrl && <a href={st.registrationFormUrl} target="_blank" rel="noopener noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 8, fontSize: 13, color: C.primary, textDecoration: "none" }}><I n="download" s={14} c={C.primary} /> Download state registration form</a>}
+      </div>)}
+      {reg.upcomingDeadlines?.length > 0 && (<div style={{ padding: 16, borderRadius: 10, border: `1px solid ${C.orangeBorder}`, background: C.orangeLight, marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}><I n="calendar" s={16} c={C.orange} /><span style={{ fontWeight: 700, fontSize: 14 }}>Upcoming Deadlines</span></div>
+        {reg.upcomingDeadlines.map((d, i) => (
+          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i < reg.upcomingDeadlines.length - 1 ? `1px solid ${C.orangeBorder}` : "none" }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>{d.title}</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ fontSize: 13, color: C.textSec }}>{d.nextDate}</span>
+              <span style={{ fontSize: 12, fontWeight: 700, color: d.daysLeft < 10 ? C.red : d.daysLeft < 30 ? C.orange : C.teal, background: d.daysLeft < 10 ? C.redLight : d.daysLeft < 30 ? C.orangeLight : C.tealLight, padding: "2px 8px", borderRadius: 10 }}>{d.daysLeft}d</span>
+            </div>
+          </div>
+        ))}
+      </div>)}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <Field label="Status"><select value={status} onChange={e => setStatus(e.target.value)} style={{ ...S.select, width: "100%" }}>{Object.keys(statusCfg).map(s => <option key={s}>{s}</option>)}</select></Field>
+        <Field label="Deadline" note="State-specific deadline for this registration"><input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} style={S.input} /></Field>
+      </div>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><I n="file" s={16} c={C.purple} /><span style={{ fontWeight: 700, fontSize: 14 }}>Required Documents</span></div>
+        {docs.map((doc, i) => <FileUploadBtn key={i} label={doc.name} fileName={doc.uploaded ? doc.file : null} onUpload={() => handleUpload(i)} />)}
+        {docs.length === 0 && <p style={{ fontSize: 13, color: C.textTri }}>No documents required for this state (configure in Library).</p>}
+      </div>
+      <Field label="Notes"><textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} placeholder="Notes for this registration..." style={{ ...S.input, resize: "vertical" }} /></Field>
+      <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+        <button onClick={onClose} style={S.btn("outline")}>Close</button>
+        <button onClick={() => window.print?.()} style={S.btn("outline")}><I n="printer" s={16} c={C.textSec} /> Print</button>
+        <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>{saving ? <><Spinner size={16} /> Saving...</> : "Save to GitHub"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NEW REGISTRATION MODAL — with product file uploads, per-state deadlines
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function NewRegModal({ open, onClose, onCreate, stateReqs, saving }) {
+  const [name, setName] = useState(""); const [type, setType] = useState("Pet Treat"); const [desc, setDesc] = useState("");
+  const [labelFile, setLabelFile] = useState(false); const [gaFile, setGaFile] = useState(false);
+  const [selStates, setSelStates] = useState([]); const [stateDeadlines, setStateDeadlines] = useState({});
+  const allCodes = Object.keys(stateReqs);
+  const toggle = (c) => setSelStates(p => p.includes(c) ? p.filter(s => s !== c) : [...p, c]);
+  const toggleAll = () => setSelStates(p => p.length === allCodes.length ? [] : [...allCodes]);
+  const valid = name && selStates.length > 0;
+  const handleCreate = () => {
+    if (!valid) return;
+    onCreate({ name, type, description: desc, states: selStates, stateDeadlines, labelFile, gaFile });
+    setName(""); setType("Pet Treat"); setDesc(""); setSelStates([]); setStateDeadlines({}); setLabelFile(false); setGaFile(false);
+    onClose();
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Register New Product" width={640}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}><I n="cat" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>Product Information</span></div>
+        <Field label="Product Name *"><input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. Salmon Purrfection Treats" style={S.input} /></Field>
+        <Field label="Product Type *"><select value={type} onChange={e => setType(e.target.value)} style={{ ...S.select, width: "100%" }}><option>Pet Treat</option><option>Cat Supplement</option></select></Field>
+        <Field label="Description"><textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="Additional notes" rows={2} style={{ ...S.input, resize: "vertical" }} /></Field>
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><I n="upload" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>Product Documents</span></div>
+        <FileUploadBtn label="Product Label / Artwork" fileName={labelFile ? "label_artwork.pdf" : null} onUpload={() => setLabelFile(!labelFile)} />
+        <FileUploadBtn label="Guaranteed Analysis" fileName={gaFile ? "guaranteed_analysis.pdf" : null} onUpload={() => setGaFile(!gaFile)} />
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><I n="mapPin" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>State Registration</span></div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, cursor: "pointer" }} onClick={toggleAll}>
+          <div style={{ width: 18, height: 18, borderRadius: 4, border: `2px solid ${selStates.length === allCodes.length ? C.primary : C.border}`, background: selStates.length === allCodes.length ? C.primary : "transparent", display: "flex", alignItems: "center", justifyContent: "center" }}>{selStates.length === allCodes.length && <I n="check" s={12} c="#fff" />}</div>
+          <span style={{ fontSize: 14, fontWeight: 500 }}>Register in all states</span>
+          {selStates.length > 0 && <span style={{ fontSize: 12, color: C.primary, fontWeight: 600 }}>({selStates.length} selected)</span>}
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+          {allCodes.map(c => { const on = selStates.includes(c); return <span key={c} onClick={() => toggle(c)} style={{ padding: "5px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", background: on ? C.primary : C.bg, color: on ? "#fff" : C.textSec, border: `1px solid ${on ? C.primary : C.border}`, transition: "all 0.15s" }}>{c}</span>; })}
+        </div>
+
+        {selStates.length > 0 && (<>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}><I n="calendar" s={14} c={C.orange} /> Set deadlines per state <span style={{ fontSize: 11, color: C.textTri, fontWeight: 400 }}>(optional — can set later)</span></div>
+          <div style={{ maxHeight: 200, overflow: "auto", border: `1px solid ${C.borderLight}`, borderRadius: 10, padding: 8 }}>
+            {selStates.map(c => (<div key={c} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", marginBottom: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: C.primary, width: 30 }}>{c}</span>
+              <span style={{ fontSize: 12, color: C.textSec, flex: 1 }}>{stateReqs[c]?.name}</span>
+              <input type="date" value={stateDeadlines[c] || ""} onChange={e => setStateDeadlines(prev => ({ ...prev, [c]: e.target.value }))} style={{ ...S.input, width: 160, padding: "6px 10px", fontSize: 12 }} />
+            </div>))}
+          </div>
+        </>)}
+      </div>
+
+      <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+        <button onClick={onClose} style={S.btn("outline")}>Cancel</button>
+        <button onClick={handleCreate} disabled={!valid || saving} style={{ ...S.btn("primary"), opacity: (!valid || saving) ? 0.5 : 1 }}>{saving ? <><Spinner size={16} /> Creating...</> : "Register Product"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// SIDEBAR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Sidebar({ page, onNavigate, registrations, syncing }) {
+  const counts = useMemo(() => { const m = {}; registrations.forEach(r => { m[r.productType] = (m[r.productType] || 0) + 1; }); return m; }, [registrations]);
+  const nav = [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "registrations", label: "All Registrations", icon: "list" }, { id: "library", label: "State Library", icon: "library" }, { id: "settings", label: "Settings", icon: "settings" }];
+  return (
+    <div style={{ width: 240, minHeight: "100vh", background: C.surface, borderRight: `1px solid ${C.border}`, padding: "20px 14px", display: "flex", flexDirection: "column", boxSizing: "border-box", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "0 8px" }}>
+        <div style={{ width: 32, height: 32, borderRadius: 8, background: C.primary, display: "flex", alignItems: "center", justifyContent: "center" }}><I n="cat" s={18} c="#fff" /></div>
+        <div><div style={{ fontSize: 15, fontWeight: 800, color: C.text, lineHeight: 1.1 }}>LicenseWatcher</div><div style={{ fontSize: 11, color: C.textTri, display: "flex", alignItems: "center", gap: 4 }}>{syncing ? <><Spinner size={10} /> Syncing...</> : <><div style={{ width: 6, height: 6, borderRadius: 3, background: C.green }} /> Connected</>}</div></div>
+      </div>
+      <button onClick={() => onNavigate("new")} style={{ ...S.btn("primary"), width: "100%", justifyContent: "center", marginTop: 16, marginBottom: 20, borderRadius: 10 }}><I n="plus" s={16} c="#fff" /> Register New Product</button>
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>{nav.map(item => { const a = page === item.id; return (<div key={item.id} onClick={() => onNavigate(item.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, cursor: "pointer", background: a ? C.primaryLight : "transparent", color: a ? C.primary : C.textSec, fontWeight: a ? 600 : 500, fontSize: 14, transition: "all 0.15s" }}><I n={item.icon} s={18} c={a ? C.primary : C.textSec} />{item.label}</div>); })}</div>
+      {Object.keys(counts).length > 0 && (<div style={{ marginTop: 28, padding: "0 8px" }}><div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, color: C.textTri, marginBottom: 10 }}>Product Types</div>{Object.entries(counts).map(([type, count]) => (<div key={type} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", fontSize: 13 }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ width: 8, height: 8, borderRadius: 4, background: type === "Cat Supplement" ? C.teal : C.primary }} /><span style={{ color: C.textSec }}>{type}</span></div><span style={{ fontSize: 12, fontWeight: 700, color: C.textTri, background: C.bg, padding: "2px 8px", borderRadius: 10 }}>{count}</span></div>))}</div>)}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export default function App() {
+  const [connected, setConnected] = useState(false);
+  const [config, setConfig] = useState(null);
+  const [db, setDb] = useState(null);
+  const [page, setPage] = useState("dashboard");
+  const [registrations, setRegistrations] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [stateReqs, setStateReqs] = useState(DEFAULT_STATES);
+  const [settings, setSettings] = useState({ alertDays: 10, emailEnabled: true });
+  const [actionReg, setActionReg] = useState(null);
+  const [showNewReg, setShowNewReg] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const showToast = (msg, type = "success") => setToast({ message: msg, type, key: Date.now() });
+
+  // Helper: get next occurrence of a month/day deadline
+  const getNextOccurrence = useCallback((month, day) => {
+    const now = new Date();
+    const thisYear = new Date(now.getFullYear(), month - 1, day);
+    const nextYear = new Date(now.getFullYear() + 1, month - 1, day);
+    return thisYear >= now ? thisYear : nextYear;
+  }, []);
+
+  const enrichRegs = useCallback((regs, stReqs) => {
+    const now = new Date();
+    return regs.map(r => {
+      // Get deadlines from the state config
+      const stateData = stReqs?.[r.state];
+      const stateDeadlines = stateData?.deadlines || [];
+
+      // Calculate next occurrence for each state deadline
+      const upcomingDeadlines = stateDeadlines
+        .filter(d => d.title && d.month && d.day)
+        .map(d => {
+          const next = getNextOccurrence(d.month, d.day);
+          const daysLeft = Math.ceil((next - now) / 86400000);
+          return { ...d, nextDate: next.toISOString().split("T")[0], daysLeft };
+        })
+        .sort((a, b) => a.daysLeft - b.daysLeft);
+
+      // Also consider a manual deadline if set on the registration itself
+      let manualDaysLeft = 999;
+      if (r.deadline) {
+        const dl = new Date(r.deadline);
+        manualDaysLeft = Math.ceil((dl - now) / 86400000);
+      }
+
+      // Nearest deadline is the soonest of all
+      const nearestStateDeadline = upcomingDeadlines[0];
+      const daysLeft = nearestStateDeadline ? Math.min(nearestStateDeadline.daysLeft, manualDaysLeft) : manualDaysLeft;
+      const priority = daysLeft < 0 ? "Critical" : daysLeft < 10 ? "High" : daysLeft < 30 ? "Medium" : "Low";
+      const nearestDeadlineLabel = nearestStateDeadline && nearestStateDeadline.daysLeft <= manualDaysLeft
+        ? nearestStateDeadline.title
+        : r.deadline ? "Manual deadline" : null;
+
+      return { ...r, daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel };
+    });
+  }, [getNextOccurrence]);
+
+  const loadData = useCallback(async (database) => {
+    setLoading(true);
+    try {
+      const [regs, prods, sreqs, sett] = await Promise.all([database.read("data/registrations.json"), database.read("data/products.json"), database.read("data/state-offices.json"), database.read("data/settings.json")]);
+      const sr = sreqs || DEFAULT_STATES;
+      setStateReqs(sr);
+      setRegistrations(enrichRegs(regs || [], sr));
+      setProducts(prods || []);
+      setSettings(sett || { alertDays: 10, emailEnabled: true });
+    } catch (e) { showToast("Failed to load: " + e.message, "error"); }
+    setLoading(false);
+  }, [enrichRegs]);
+
+  const handleConnect = async (cfg) => { const database = new GitHubDB(cfg.token, cfg.repo, cfg.owner); setDb(database); setConfig(cfg); setConnected(true); await loadData(database); };
+
+  const saveRegs = useCallback(async (newRegs) => {
+    if (!db) return; setSyncing(true);
+    try {
+      const toSave = newRegs.map(({ daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...rest }) => rest);
+      await db.write("data/registrations.json", toSave, "Update registrations");
+      setRegistrations(enrichRegs(newRegs, stateReqs)); showToast("Saved to GitHub");
+    } catch (e) { showToast("Save failed: " + e.message, "error"); }
+    setSyncing(false);
+  }, [db, enrichRegs]);
+
+  const saveProducts = useCallback(async (newProds) => {
+    if (!db) return;
+    try { await db.write("data/products.json", newProds, "Update products"); setProducts(newProds); } catch (e) { showToast("Save failed: " + e.message, "error"); }
+  }, [db]);
+
+  // Create registrations — per-state deadlines, product files
+  const handleCreate = async ({ name, type, description, states, stateDeadlines, labelFile, gaFile }) => {
+    setSyncing(true);
+    const now = new Date();
+    const newRegs = states.map((st, i) => {
+      const sr = stateReqs[st];
+      return {
+        id: `reg_${Date.now()}_${i}`, productName: name, productType: type, state: st, stateName: sr?.name || st,
+        status: "Pending", deadline: stateDeadlines[st] || "", totalDocs: sr?.requirements?.length || 0, uploadedDocs: 0,
+        documents: (sr?.requirements || []).map(r => ({ name: r, uploaded: false, file: null })),
+        notes: description, createdAt: now.toISOString().split("T")[0],
+      };
+    });
+    const all = [...registrations.map(({ daysLeft, priority, ...r }) => r), ...newRegs];
+    if (!products.find(p => p.name === name)) await saveProducts([...products, { name, type, description, labelFile, gaFile, createdAt: now.toISOString().split("T")[0] }]);
+    await saveRegs(all); setSyncing(false);
+  };
+
+  const handleUpdate = async (updated) => {
+    setSyncing(true);
+    const { daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...clean } = updated;
+    const newRegs = registrations.map(r => r.id === updated.id ? clean : (() => { const { daysLeft: dl, priority: pr, upcomingDeadlines: ud, nearestDeadlineLabel: ndl, ...rest } = r; return rest; })());
+    await saveRegs(newRegs); setActionReg(null); setSyncing(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm("Delete this registration?")) return;
+    const newRegs = registrations.filter(r => r.id !== id).map(({ daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...r }) => r);
+    await saveRegs(newRegs);
+  };
+
+  const handleSaveState = async (code, data) => {
+    if (!db) return; setSyncing(true);
+    try {
+      const updated = { ...stateReqs, [code]: data };
+      await db.write("data/state-offices.json", updated, `Update state: ${code}`);
+      setStateReqs(updated); showToast(`${data.name} updated`);
+    } catch (e) { showToast("Save failed: " + e.message, "error"); }
+    setSyncing(false);
+  };
+
+  const handleBulkSave = async (allStates) => {
+    if (!db) return; setSyncing(true);
+    try {
+      await db.write("data/state-offices.json", allStates, "Bulk update state offices from CSV");
+      setStateReqs(allStates); showToast("All states updated from CSV");
+    } catch (e) { showToast("Bulk save failed: " + e.message, "error"); }
+    setSyncing(false);
+  };
+
+  const handleSaveSettings = async (newSettings) => {
+    if (!db) return; setSyncing(true);
+    try { await db.write("data/settings.json", newSettings, "Update settings"); setSettings(newSettings); showToast("Settings saved"); } catch (e) { showToast("Save failed: " + e.message, "error"); }
+    setSyncing(false);
+  };
+
+  const handleNavigate = (p) => { if (p === "new") { setShowNewReg(true); return; } setPage(p); };
+
+  if (!connected) return <SetupPage onConnect={handleConnect} />;
+
+  return (
+    <div style={{ display: "flex", minHeight: "100vh", background: C.bg, fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif", color: C.text }}>
+      <Sidebar page={page} onNavigate={handleNavigate} registrations={registrations} syncing={syncing} />
+      <div style={{ flex: 1, padding: "28px 36px", maxWidth: 1200, overflowX: "auto" }}>
+        {loading ? (<div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 400, gap: 16 }}><Spinner size={32} /><div style={{ fontSize: 15, color: C.textSec }}>Loading from GitHub...</div></div>) : (<>
+          {page === "dashboard" && <DashboardPage registrations={registrations} onNavigate={handleNavigate} onAction={setActionReg} />}
+          {page === "registrations" && <RegistrationsPage registrations={registrations} stateReqs={stateReqs} onAction={setActionReg} onNewReg={() => setShowNewReg(true)} onDelete={handleDelete} />}
+          {page === "library" && <LibraryPage stateReqs={stateReqs} onSaveState={handleSaveState} onBulkSave={handleBulkSave} saving={syncing} />}
+          {page === "settings" && <SettingsPage settings={settings} onSave={handleSaveSettings} products={products} config={config} saving={syncing} />}
+        </>)}
+      </div>
+      <ActionModal reg={actionReg} open={!!actionReg} onClose={() => setActionReg(null)} onUpdate={handleUpdate} stateReqs={stateReqs} saving={syncing} />
+      <NewRegModal open={showNewReg} onClose={() => setShowNewReg(false)} onCreate={handleCreate} stateReqs={stateReqs} saving={syncing} />
+      {toast && <Toast key={toast.key} message={toast.message} type={toast.type} onDone={() => setToast(null)} />}
+    </div>
+  );
+}
