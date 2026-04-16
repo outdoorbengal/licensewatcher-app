@@ -1632,8 +1632,13 @@ export default function App() {
     try {
       const [regs, prods, sreqs, sett] = await Promise.all([database.read("data/registrations.json"), database.read("data/products.json"), database.read("data/state-offices.json"), database.read("data/settings.json")]);
       const sr = sreqs || DEFAULT_STATES;
+      const statesWithDeadlines = Object.entries(sr).filter(([,s]) => s.deadlines?.length > 0).length;
+      log("LoadData", `${(regs||[]).length} regs, ${(prods||[]).length} products, ${statesWithDeadlines} states with deadlines`);
       setStateReqs(sr);
-      setRegistrations(enrichRegs(regs || [], sr));
+      const enriched = enrichRegs(regs || [], sr);
+      const totalDl = enriched.reduce((s, r) => s + (r.upcomingDeadlines?.length || 0), 0);
+      log("LoadEnrich", `${enriched.length} regs enriched, ${totalDl} total deadline instances`);
+      setRegistrations(enriched);
       setProducts(prods || []);
       setSettings(sett || { alertDays: 10, emailEnabled: true });
     } catch (e) { showToast("Failed to load: " + e.message, "error"); }
@@ -1644,14 +1649,18 @@ export default function App() {
 
   const saveRegs = useCallback(async (newRegs) => {
     if (!db) return; setSyncing(true);
-    log("SaveRegs", `Saving ${newRegs.length} registrations`);
+    log("SaveRegs", `Saving ${newRegs.length} registrations. StateReqs has ${Object.keys(stateReqs).length} states, sample deadlines: ${Object.entries(stateReqs).filter(([,s]) => s.deadlines?.length > 0).length} states with deadlines`);
     try {
       const toSave = newRegs.map(({ daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...rest }) => rest);
       await db.write("data/registrations.json", toSave, "Update registrations");
-      setRegistrations(enrichRegs(newRegs, stateReqs)); showToast("Saved to GitHub");
+      const enriched = enrichRegs(newRegs, stateReqs);
+      const totalDeadlines = enriched.reduce((s, r) => s + (r.upcomingDeadlines?.length || 0), 0);
+      log("EnrichResult", `${enriched.length} regs, ${totalDeadlines} total deadline instances`);
+      setRegistrations(enriched);
+      showToast("Saved to GitHub");
     } catch (e) { showToast("Save failed: " + e.message, "error"); }
     setSyncing(false);
-  }, [db, enrichRegs]);
+  }, [db, enrichRegs, stateReqs]);
 
   const saveProducts = useCallback(async (newProds) => {
     if (!db) return;
