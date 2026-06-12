@@ -26,8 +26,17 @@ class GitHubDB {
       return JSON.parse(atob(data.content.replace(/\n/g, "")));
     } catch (e) { console.error("GitHubDB read:", e); throw e; }
   }
+  // GitHub requires the current sha to overwrite an existing file — fetch it if we don't have it cached
+  async ensureSha(path) {
+    if (this.shas[path]) return;
+    try {
+      const res = await fetch(`${this.base}/${path}`, { headers: this.headers() });
+      if (res.ok) { const data = await res.json(); this.shas[path] = data.sha; }
+    } catch (_) { /* file may not exist yet — create without sha */ }
+  }
   async write(path, data, message) {
     try {
+      await this.ensureSha(path);
       const content = btoa(unescape(encodeURIComponent(JSON.stringify(data, null, 2))));
       const body = { message: message || `Update ${path}`, content };
       if (this.shas[path]) body.sha = this.shas[path];
@@ -44,6 +53,7 @@ class GitHubDB {
   }
   async uploadFile(path, base64Content, message) {
     try {
+      await this.ensureSha(path);
       const body = { message: message || `Upload ${path}`, content: base64Content };
       if (this.shas[path]) body.sha = this.shas[path];
       const res = await fetch(`${this.base}/${path}`, { method: "PUT", headers: this.headers(), body: JSON.stringify(body) });
@@ -80,7 +90,7 @@ class GitHubDB {
 // ALL 50 STATES — blank templates for user to fill in
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const BLANK = { contact: "", email: "", phone: "", processingTime: "", fees: "", requirements: [], notes: "", registrationFormUrl: "", registrationFormFile: "", deadlines: [], submissionMethod: "mail", onlinePortalUrl: "", checkPayee: "", mailingAddress: "" };
+const BLANK = { contact: "", email: "", phone: "", processingTime: "", fees: "", requirements: [], notes: "", registrationFormUrl: "", registrationFormFile: "", deadlines: [], submissionMethod: "mail", onlinePortalUrl: "", portalUsername: "", portalPassword: "", checkPayee: "", mailingAddress: "" };
 const DEFAULT_STATES = {
   AL: { name: "Alabama", ...BLANK }, AK: { name: "Alaska", ...BLANK }, AZ: { name: "Arizona", ...BLANK },
   AR: { name: "Arkansas", ...BLANK }, CA: { name: "California", ...BLANK }, CO: { name: "Colorado", ...BLANK },
@@ -123,7 +133,7 @@ const S = {
   input: { padding: "10px 14px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: "inherit", outline: "none", background: C.surface, color: C.text, width: "100%", boxSizing: "border-box" },
   select: { padding: "10px 14px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: "inherit", outline: "none", background: C.surface, color: C.text, cursor: "pointer", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B616E' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center", paddingRight: 36 },
 };
-const statusCfg = { Pending: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, "In Review": { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Approved: { bg: C.greenLight, fg: C.green, bd: C.greenBorder }, Expired: { bg: C.greyLight, fg: C.grey, bd: C.greyBorder }, Rejected: { bg: C.redLight, fg: C.red, bd: C.redBorder } };
+const statusCfg = { Pending: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, "In Review": { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Approved: { bg: C.greenLight, fg: C.green, bd: C.greenBorder }, Expired: { bg: C.greyLight, fg: C.grey, bd: C.greyBorder }, Rejected: { bg: C.redLight, fg: C.red, bd: C.redBorder }, "Not Required": { bg: C.tealLight, fg: C.teal, bd: C.teal + "40" } };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ICONS
@@ -296,7 +306,8 @@ function DashboardPage({ registrations, onNavigate, onAction }) {
   const stats = useMemo(() => {
     const t = registrations.length, ex = registrations.filter(r => r.daysLeft > 0 && r.daysLeft <= 30).length;
     const ov = registrations.filter(r => r.daysLeft < 0).length, ap = registrations.filter(r => r.status === "Approved").length;
-    const rate = t > 0 ? Math.round((ap / t) * 100) : 0;
+    const eligible = registrations.filter(r => r.status !== "Not Required").length;
+    const rate = eligible > 0 ? Math.round((ap / eligible) * 100) : 0;
     return { total: t, expiring: ex, overdue: ov, rate };
   }, [registrations]);
 
@@ -305,7 +316,7 @@ function DashboardPage({ registrations, onNavigate, onAction }) {
     const items = [];
     registrations.forEach(r => {
       (r.upcomingDeadlines || []).forEach(d => {
-        if (!d.approved && r.status !== "Approved" && r.status !== "Rejected") {
+        if (!d.approved && r.status !== "Approved" && r.status !== "Rejected" && r.status !== "Not Required") {
           items.push({ ...d, reg: r });
         }
       });
@@ -496,7 +507,7 @@ function DeadlinesPage({ registrations, stateReqs, onAction, onEditProduct }) {
                 {d.approved ? (
                   <span style={{ fontSize: 11, fontWeight: 700, color: C.green, background: C.greenLight, padding: "4px 10px", borderRadius: 10, display: "flex", alignItems: "center", gap: 4 }}><I n="check" s={12} c={C.green} /> Approved</span>
                 ) : (<>
-                  {d.dlStatus && d.dlStatus !== "Not Started" && <span style={{ fontSize: 11, fontWeight: 700, color: d.dlStatus === "Submitted" ? C.primary : C.purple, background: d.dlStatus === "Submitted" ? C.primaryLight : C.purpleLight, padding: "4px 10px", borderRadius: 10 }}>{d.dlStatus}</span>}
+                  {d.dlStatus && d.dlStatus !== "Not Started" && <span style={{ fontSize: 11, fontWeight: 700, color: d.dlStatus === "Submitted" ? C.primary : d.dlStatus === "Rejected" ? C.red : C.purple, background: d.dlStatus === "Submitted" ? C.primaryLight : d.dlStatus === "Rejected" ? C.redLight : C.purpleLight, padding: "4px 10px", borderRadius: 10 }}>{d.dlStatus}</span>}
                   <span style={{ fontSize: 12, fontWeight: 700, color: d.daysLeft < 10 ? C.red : d.daysLeft < 30 ? C.orange : C.teal, background: d.daysLeft < 10 ? C.redLight : d.daysLeft < 30 ? C.orangeLight : C.tealLight, padding: "4px 10px", borderRadius: 10 }}>{d.daysLeft < 0 ? `${Math.abs(d.daysLeft)}d overdue` : `${d.daysLeft}d left`}</span>
                 </>)}
                 <button onClick={() => onAction(d.reg, { title: d.title, nextDate: d.nextDate, year: d.year, instanceKey: d.instanceKey })} style={{ ...S.btn("outline"), padding: "6px 14px", fontSize: 12 }}>Action</button>
@@ -635,10 +646,13 @@ function ProductsPage({ registrations, stateReqs, products, onEditProduct, onBul
                 {regs.map((r, i) => (
                   <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 18px", borderBottom: i < regs.length - 1 ? `1px solid ${C.borderLight}` : "none" }}>
                     <span style={{ fontSize: 13, fontWeight: 700, color: C.primary, width: 30 }}>{r.state}</span>
-                    <span style={{ flex: 1, fontSize: 13, color: C.textSec }}>{r.stateName}</span>
-                    <Badge cfg={statusCfg[r.status]}>{r.status}</Badge>
-                    <div style={{ display: "flex", gap: 4 }}>
+                    <span style={{ fontSize: 13, color: C.textSec }}>{r.stateName}</span>
+                    <Badge cfg={statusCfg[r.status] || statusCfg.Pending}>{r.status}</Badge>
+                    {r.status === "Rejected" && r.rejectionReason && <span title={r.rejectionReason} style={{ fontSize: 12, color: C.red, fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flexShrink: 1 }}>“{r.rejectionReason}”</span>}
+                    <div style={{ flex: 1 }} />
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                       <button onClick={() => onUpdateRegStatus(r.id, "Approved")} title="Approve permanently" style={{ background: "none", border: `1px solid ${C.greenBorder}`, borderRadius: 6, padding: "4px 8px", cursor: "pointer", color: C.green, fontSize: 11, fontWeight: 600 }}>✓ Approve</button>
+                      <button onClick={() => onUpdateRegStatus(r.id, "Not Required")} title="Registration not required in this state" style={{ background: "none", border: `1px solid ${C.teal}40`, borderRadius: 6, padding: "4px 8px", cursor: "pointer", color: C.teal, fontSize: 11, fontWeight: 600 }}>∅ Not Required</button>
                       <button onClick={() => onUpdateRegStatus(r.id, "Expired")} title="Pause" style={{ background: "none", border: `1px solid ${C.greyBorder}`, borderRadius: 6, padding: "4px 8px", cursor: "pointer", color: C.grey, fontSize: 11, fontWeight: 600 }}>⏸ Pause</button>
                       <button onClick={() => onUpdateRegStatus(r.id, "Rejected")} title="Reject" style={{ background: "none", border: `1px solid ${C.redBorder}`, borderRadius: 6, padding: "4px 8px", cursor: "pointer", color: C.red, fontSize: 11, fontWeight: 600 }}>✕ Reject</button>
                     </div>
@@ -663,6 +677,7 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
   const [form, setForm] = useState({});
   const [newReq, setNewReq] = useState("");
   const [uploadingForm, setUploadingForm] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState(null); // { updated, changes } awaiting overwrite confirmation
 
   const fileToBase64 = (file) => new Promise((res, rej) => {
     const reader = new FileReader();
@@ -685,7 +700,7 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
   };
 
   const entries = Object.entries(stateReqs).filter(([c, s]) => !search || s.name.toLowerCase().includes(search.toLowerCase()) || c.toLowerCase().includes(search.toLowerCase()));
-  const hasAnyData = (s) => s.contact || s.email || s.fees || s.processingTime || (s.requirements?.length > 0) || (s.deadlines?.length > 0) || s.notes;
+  const hasAnyData = (s) => s.contact || s.email || s.fees || s.processingTime || (s.requirements?.length > 0) || (s.deadlines?.length > 0) || s.notes || s.onlinePortalUrl || s.portalUsername;
   const filled = entries.filter(([, s]) => hasAnyData(s));
   const empty = entries.filter(([, s]) => !hasAnyData(s));
 
@@ -699,18 +714,36 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
   const removeReq = (idx) => setForm(prev => ({ ...prev, requirements: prev.requirements.filter((_, i) => i !== idx) }));
   const handleSave = () => { onSaveState(editing, form); setEditing(null); };
 
-  // Download template — serves the pre-built XLSX from /state_offices_template.xlsx in public/
-  const downloadTemplate = () => {
-    window.open("/state_offices_template.xlsx", "_blank");
+  const loadXLSX = () => import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");
+
+  // Download the library as XLSX — reflects everything already configured in the app, no sheet protection
+  const handleDownloadXlsx = async () => {
+    try {
+      const XLSX = await loadXLSX();
+      const header = ["State Code", "State Name", "Contact", "Email", "Phone", "Fees", "Processing Time"];
+      for (let i = 1; i <= 5; i++) header.push(`Deadline ${i} Title`, `Deadline ${i} Month`, `Deadline ${i} Day`);
+      header.push("Required Docs (semicolon-separated)", "Registration Form URL", "Notes", "Online Portal URL", "Portal Username", "Portal Password");
+      const rows = Object.entries(stateReqs).map(([code, s]) => {
+        const row = [code, s.name, s.contact || "", s.email || "", s.phone || "", s.fees || "", s.processingTime || ""];
+        for (let i = 0; i < 5; i++) { const d = (s.deadlines || [])[i]; row.push(d?.title || "", d?.month || "", d?.day || ""); }
+        row.push((s.requirements || []).join("; "), s.registrationFormUrl || "", s.notes || "", s.onlinePortalUrl || "", s.portalUsername || "", s.portalPassword || "");
+        return row;
+      });
+      const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
+      ws["!cols"] = header.map((_, i) => ({ wch: i === 0 ? 10 : i === 24 ? 40 : 18 }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "State Offices");
+      XLSX.writeFile(wb, "licensewatcher_state_offices.xlsx");
+    } catch (err) { alert("Download failed: " + err.message); }
   };
 
-  // XLSX Upload using SheetJS — matches template: A=Code B=Name C=Contact D=Email E=Phone F=Fees G=Processing
-  // H/I/J=DL1 title/month/day, K/L/M=DL2, N/O/P=DL3, Q/R/S=DL4, T/U/V=DL5, W=Docs X=FormURL Y=Notes
+  // XLSX Upload using SheetJS — columns: A=Code B=Name C=Contact D=Email E=Phone F=Fees G=Processing
+  // H..V = 5 deadlines (title/month/day), W=Docs X=FormURL Y=Notes Z=PortalURL AA=Username AB=Password
   const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     try {
-      const XLSX = await import("https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs");
+      const XLSX = await loadXLSX();
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data);
       const sheetName = workbook.SheetNames.find(n => n.toLowerCase().includes("state")) || workbook.SheetNames[0];
@@ -725,7 +758,6 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
       }
 
       const updated = { ...stateReqs };
-      let loadedCount = 0;
       for (let i = headerIdx + 1; i < rows.length; i++) {
         const r = rows[i];
         if (!r || !r[0]) continue;
@@ -758,13 +790,34 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
           requirements: str(22) ? str(22).split(";").map(s => s.trim()).filter(Boolean) : updated[code].requirements || [],
           registrationFormUrl: str(23) || updated[code].registrationFormUrl || "",
           notes: str(24) || updated[code].notes || "",
+          onlinePortalUrl: str(25) || updated[code].onlinePortalUrl || "",
+          portalUsername: str(26) || updated[code].portalUsername || "",
+          portalPassword: str(27) || updated[code].portalPassword || "",
         };
-        loadedCount++;
       }
-      onBulkSave(updated);
-      alert(`Loaded data for ${loadedCount} states.`);
+
+      // Diff against current data so the user can confirm before anything is overwritten
+      const FIELD_LABELS = { contact: "Contact", email: "Email", phone: "Phone", fees: "Fees", processingTime: "Processing Time", deadlines: "Deadlines", requirements: "Required Docs", registrationFormUrl: "Form URL", notes: "Notes", onlinePortalUrl: "Portal URL", portalUsername: "Portal Username", portalPassword: "Portal Password" };
+      const changes = [];
+      Object.keys(updated).forEach(code => {
+        const before = stateReqs[code] || {}, after = updated[code];
+        const overwritten = [], added = [];
+        Object.keys(FIELD_LABELS).forEach(f => {
+          if (JSON.stringify(before[f] ?? "") === JSON.stringify(after[f] ?? "")) return;
+          const hadValue = Array.isArray(before[f]) ? before[f].length > 0 : !!before[f];
+          (hadValue ? overwritten : added).push(FIELD_LABELS[f]);
+        });
+        if (overwritten.length || added.length) changes.push({ code, name: after.name, overwritten, added });
+      });
+      if (changes.length === 0) alert("No changes detected — the file matches the current library.");
+      else setPendingUpload({ updated, changes });
     } catch (err) { console.error("XLSX parse error:", err); alert("Error parsing file: " + err.message); }
     e.target.value = "";
+  };
+
+  const confirmUpload = () => {
+    if (pendingUpload) onBulkSave(pendingUpload.updated);
+    setPendingUpload(null);
   };
 
   const StateCard = ({ code, st }) => {
@@ -806,7 +859,7 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div><h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>State Offices Library</h1><p style={{ margin: "4px 0 0", color: C.textSec, fontSize: 15 }}>Contact info, requirements, deadlines, and forms for each state — click any card to edit</p></div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-          <button onClick={downloadTemplate} style={S.btn("outline")}><I n="download" s={16} c={C.textSec} /> Download Template</button>
+          <button onClick={handleDownloadXlsx} style={S.btn("outline")}><I n="download" s={16} c={C.textSec} /> Download XLSX</button>
           <label style={{ ...S.btn("primary"), cursor: "pointer" }}><I n="upload" s={16} c="#fff" /> Upload XLSX<input type="file" accept=".xlsx,.xls" onChange={handleFileUpload} style={{ display: "none" }} /></label>
         </div>
       </div>
@@ -878,9 +931,13 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
                 <input type="radio" checked={form.submissionMethod === "both"} onChange={() => updateForm("submissionMethod", "both")} /> Both
               </label>
             </div>
-            {(form.submissionMethod === "online" || form.submissionMethod === "both") && (
+            {(form.submissionMethod === "online" || form.submissionMethod === "both") && (<>
               <Field label="Online Portal URL"><input value={form.onlinePortalUrl || ""} onChange={e => updateForm("onlinePortalUrl", e.target.value)} placeholder="https://state.gov/feed-registration-portal" style={S.input} /></Field>
-            )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Field label="Portal Username"><input value={form.portalUsername || ""} onChange={e => updateForm("portalUsername", e.target.value)} placeholder="account username" style={S.input} /></Field>
+                <Field label="Portal Password"><input value={form.portalPassword || ""} onChange={e => updateForm("portalPassword", e.target.value)} placeholder="account password" style={S.input} /></Field>
+              </div>
+            </>)}
             {(form.submissionMethod === "mail" || form.submissionMethod === "both" || !form.submissionMethod) && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <Field label="Check Payable To"><input value={form.checkPayee || ""} onChange={e => updateForm("checkPayee", e.target.value)} placeholder="State Dept of Agriculture" style={S.input} /></Field>
@@ -902,6 +959,28 @@ function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
             <button onClick={() => setEditing(null)} style={S.btn("outline")}>Cancel</button>
             <button onClick={handleSave} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>{saving ? <><Spinner size={16} /> Saving...</> : "Save to GitHub"}</button>
+          </div>
+        </div>)}
+      </Modal>
+
+      {/* Upload overwrite confirmation */}
+      <Modal open={!!pendingUpload} onClose={() => setPendingUpload(null)} title="Confirm XLSX Upload" width={560}>
+        {pendingUpload && (<div>
+          <p style={{ margin: "0 0 14px", fontSize: 14, color: C.textSec }}>
+            This file changes <strong>{pendingUpload.changes.length}</strong> state{pendingUpload.changes.length === 1 ? "" : "s"}. Review what will be overwritten before continuing:
+          </p>
+          <div style={{ maxHeight: 320, overflow: "auto", border: `1px solid ${C.borderLight}`, borderRadius: 10, marginBottom: 16 }}>
+            {pendingUpload.changes.map((ch, i) => (
+              <div key={ch.code} style={{ padding: "10px 14px", borderBottom: i < pendingUpload.changes.length - 1 ? `1px solid ${C.borderLight}` : "none" }}>
+                <div style={{ fontWeight: 700, fontSize: 13 }}>{ch.code} — {ch.name}</div>
+                {ch.overwritten.length > 0 && <div style={{ fontSize: 12, color: C.red, marginTop: 2 }}>Overwrites: {ch.overwritten.join(", ")}</div>}
+                {ch.added.length > 0 && <div style={{ fontSize: 12, color: C.green, marginTop: 2 }}>New: {ch.added.join(", ")}</div>}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+            <button onClick={() => setPendingUpload(null)} style={S.btn("outline")}>Cancel</button>
+            <button onClick={confirmUpload} disabled={saving} style={{ ...S.btn("primary"), opacity: saving ? 0.5 : 1 }}>Overwrite & Save</button>
           </div>
         </div>)}
       </Modal>
@@ -983,6 +1062,7 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
   const [uploadingApproval, setUploadingApproval] = useState(false);
   const [showApprovalPrompt, setShowApprovalPrompt] = useState(false);
   const [deadlineStatus, setDeadlineStatus] = useState(null);
+  const [rejectComment, setRejectComment] = useState("");
 
   useEffect(() => {
     if (reg) {
@@ -996,14 +1076,17 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
       if (deadlineCtx) {
         const existing = (reg.approvals || {})[deadlineCtx.instanceKey];
         setDeadlineStatus(existing?.status || "Not Started");
+        setRejectComment(existing?.comment || reg.rejectionReason || "");
       } else {
         setDeadlineStatus(null);
+        setRejectComment(reg.rejectionReason || "");
       }
     }
   }, [reg, deadlineCtx]);
   if (!reg) return null;
   const st = stateReqs[reg.state];
   const product = products?.find(p => p.name === reg.productName);
+  const labelDocs = product?.labels?.length ? product.labels : (product?.labelFilePath ? [{ file: product.labelFile, path: product.labelFilePath }] : []);
 
   const fileToBase64 = (file) => new Promise((res, rej) => {
     const reader = new FileReader();
@@ -1057,15 +1140,17 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
           ...(approvals[deadlineCtx.instanceKey] || {}),
           date: new Date().toISOString().split("T")[0],
           status: deadlineStatus,
+          comment: deadlineStatus === "Rejected" ? rejectComment : (approvals[deadlineCtx.instanceKey]?.comment || ""),
           file: approvalFile || approvals[deadlineCtx.instanceKey]?.file || "",
           filePath: approvalFilePath || approvals[deadlineCtx.instanceKey]?.filePath || "",
           year: deadlineCtx.year,
         },
       };
-      // Don't change the overall registration status
-      saveStatus = reg.status;
+      // A rejected filing flags the whole registration; otherwise keep the overall status untouched
+      saveStatus = deadlineStatus === "Rejected" ? "Rejected" : reg.status;
     }
-    onUpdate({ ...reg, documents: docs, uploadedDocs: ct, status: saveStatus, deadline: reg.deadline || "", notes, approvals, lastActionDate: new Date().toISOString().split("T")[0] });
+    const rejectionReason = saveStatus === "Rejected" ? rejectComment : "";
+    onUpdate({ ...reg, documents: docs, uploadedDocs: ct, status: saveStatus, rejectionReason, deadline: reg.deadline || "", notes, approvals, lastActionDate: new Date().toISOString().split("T")[0] });
   };
 
   const submissionMethod = st?.submissionMethod || "mail";
@@ -1098,10 +1183,11 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
           {(() => {
             const existing = (reg.approvals || {})[deadlineCtx.instanceKey];
             const currentDlStatus = deadlineStatus || existing?.status || null;
+            const boxClr = currentDlStatus === "Approved" ? { bd: C.green, bg: C.greenLight } : currentDlStatus === "Submitted" ? { bd: C.primary, bg: C.primaryFaint } : currentDlStatus === "Rejected" ? { bd: C.red, bg: C.redLight } : { bd: C.border, bg: C.bg };
             return (
-              <div style={{ padding: 16, borderRadius: 10, border: `2px solid ${currentDlStatus === "Approved" ? C.green : currentDlStatus === "Submitted" ? C.primary : C.border}`, background: currentDlStatus === "Approved" ? C.greenLight : currentDlStatus === "Submitted" ? C.primaryFaint : C.bg }}>
+              <div style={{ padding: 16, borderRadius: 10, border: `2px solid ${boxClr.bd}`, background: boxClr.bg }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: C.textTri, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10 }}>Deadline Status</div>
-                <div style={{ display: "flex", gap: 10, marginBottom: currentDlStatus === "Approved" ? 14 : 0 }}>
+                <div style={{ display: "flex", gap: 10, marginBottom: currentDlStatus === "Approved" || currentDlStatus === "Rejected" ? 14 : 0 }}>
                   <button onClick={() => { setDeadlineStatus("Submitted"); setShowApprovalPrompt(false); }} style={{
                     ...S.btn(currentDlStatus === "Submitted" ? "primary" : "outline"),
                     flex: 1, justifyContent: "center", padding: "12px 16px", fontSize: 14,
@@ -1120,11 +1206,26 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
                   }}>
                     {currentDlStatus === "Approved" && <span>✓</span>} Approved
                   </button>
+                  <button onClick={() => { setDeadlineStatus("Rejected"); setShowApprovalPrompt(false); }} style={{
+                    ...S.btn(currentDlStatus === "Rejected" ? "danger" : "outline"),
+                    flex: 1, justifyContent: "center", padding: "12px 16px", fontSize: 14,
+                    background: currentDlStatus === "Rejected" ? C.red : "transparent",
+                    color: currentDlStatus === "Rejected" ? "#fff" : C.red,
+                    borderColor: C.red,
+                  }}>
+                    {currentDlStatus === "Rejected" && <span>✕</span>} Rejected
+                  </button>
                 </div>
                 {showApprovalPrompt && (
                   <div>
                     <p style={{ margin: "0 0 10px", fontSize: 13, color: C.textSec }}>Upload the confirmation from <strong>{reg.stateName}</strong> (optional). It will be archived for year <strong>{deadlineCtx.year}</strong>.</p>
                     <FileUploadBtn label="Approval document (optional)" fileName={approvalFile} filePath={approvalFilePath} onUpload={handleApprovalUpload} uploading={uploadingApproval} db={db} />
+                  </div>
+                )}
+                {currentDlStatus === "Rejected" && (
+                  <div>
+                    <p style={{ margin: "0 0 8px", fontSize: 13, color: C.textSec }}>Why was it rejected? This will be shown on the Registrations tab.</p>
+                    <textarea value={rejectComment} onChange={e => setRejectComment(e.target.value)} rows={2} placeholder="Reason for rejection..." style={{ ...S.input, resize: "vertical" }} />
                   </div>
                 )}
               </div>
@@ -1156,15 +1257,23 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
             })}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-            {["Expired", "Rejected"].map(s => (
-              <button key={s} onClick={() => setStatus(s)} style={{
-                ...S.btn("outline"), padding: "5px 12px", fontSize: 12,
-                background: status === s ? (s === "Expired" ? C.greyLight : C.redLight) : "transparent",
-                color: status === s ? (s === "Expired" ? C.grey : C.red) : C.textTri,
-                borderColor: status === s ? (s === "Expired" ? C.greyBorder : C.redBorder) : C.border,
-              }}>{s}</button>
-            ))}
+            {["Expired", "Rejected", "Not Required"].map(s => {
+              const cfg = statusCfg[s];
+              return (
+                <button key={s} onClick={() => setStatus(s)} style={{
+                  ...S.btn("outline"), padding: "5px 12px", fontSize: 12,
+                  background: status === s ? cfg.bg : "transparent",
+                  color: status === s ? cfg.fg : C.textTri,
+                  borderColor: status === s ? cfg.bd : C.border,
+                }}>{s}</button>
+              );
+            })}
           </div>
+          {status === "Rejected" && (
+            <div style={{ marginTop: 10 }}>
+              <textarea value={rejectComment} onChange={e => setRejectComment(e.target.value)} rows={2} placeholder="Reason for rejection — shown on the Registrations tab..." style={{ ...S.input, resize: "vertical" }} />
+            </div>
+          )}
         </div>
       )}
 
@@ -1179,12 +1288,18 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
       </div>)}
 
       {/* How to Submit */}
-      {st && (st.onlinePortalUrl || st.mailingAddress || st.checkPayee) && (<div style={{ padding: 16, borderRadius: 10, border: `1px solid ${C.primary}40`, background: C.primaryFaint, marginBottom: 14 }}>
+      {st && (st.onlinePortalUrl || st.portalUsername || st.portalPassword || st.mailingAddress || st.checkPayee) && (<div style={{ padding: 16, borderRadius: 10, border: `1px solid ${C.primary}40`, background: C.primaryFaint, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}><I n="zap" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>How to Submit</span></div>
-        {(submissionMethod === "online" || submissionMethod === "both") && st.onlinePortalUrl && (
+        {(st.onlinePortalUrl || st.portalUsername || st.portalPassword) && (
           <div style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 12, color: C.textTri, fontWeight: 600, textTransform: "uppercase", marginBottom: 4 }}>Online Portal</div>
-            <a href={st.onlinePortalUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.btn("outline"), padding: "6px 12px", fontSize: 13, textDecoration: "none" }}><I n="link" s={14} c={C.primary} /> Open submission portal</a>
+            {st.onlinePortalUrl && <a href={st.onlinePortalUrl} target="_blank" rel="noopener noreferrer" style={{ ...S.btn("outline"), padding: "6px 12px", fontSize: 13, textDecoration: "none" }}><I n="link" s={14} c={C.primary} /> Open submission portal</a>}
+            {(st.portalUsername || st.portalPassword) && (
+              <div style={{ display: "flex", gap: 24, marginTop: 8 }}>
+                {st.portalUsername && <div><div style={{ fontSize: 11, color: C.textTri, fontWeight: 600, textTransform: "uppercase", marginBottom: 2 }}>Username</div><div style={{ fontSize: 13, fontWeight: 600, fontFamily: "monospace" }}>{st.portalUsername}</div></div>}
+                {st.portalPassword && <div><div style={{ fontSize: 11, color: C.textTri, fontWeight: 600, textTransform: "uppercase", marginBottom: 2 }}>Password</div><div style={{ fontSize: 13, fontWeight: 600, fontFamily: "monospace" }}>{st.portalPassword}</div></div>}
+              </div>
+            )}
           </div>
         )}
         {(submissionMethod === "mail" || submissionMethod === "both" || !submissionMethod) && (st.checkPayee || st.mailingAddress) && (
@@ -1211,7 +1326,7 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
               <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: i < otherDeadlines.length - 1 ? `1px solid ${C.orangeBorder}` : "none" }}>
                 <div>
                   <span style={{ fontSize: 14, fontWeight: 600 }}>{d.title}</span>
-                  {d.dlStatus && d.dlStatus !== "Not Started" && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: d.dlStatus === "Submitted" ? C.primary : d.dlStatus === "Under Review" ? C.purple : C.teal, background: d.dlStatus === "Submitted" ? C.primaryLight : d.dlStatus === "Under Review" ? C.purpleLight : C.tealLight, padding: "2px 6px", borderRadius: 6 }}>{d.dlStatus}</span>}
+                  {d.dlStatus && d.dlStatus !== "Not Started" && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: d.dlStatus === "Submitted" ? C.primary : d.dlStatus === "Rejected" ? C.red : d.dlStatus === "Under Review" ? C.purple : C.teal, background: d.dlStatus === "Submitted" ? C.primaryLight : d.dlStatus === "Rejected" ? C.redLight : d.dlStatus === "Under Review" ? C.purpleLight : C.tealLight, padding: "2px 6px", borderRadius: 6 }}>{d.dlStatus}</span>}
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontSize: 13, color: C.textSec }}>{d.nextDate}</span>
@@ -1241,9 +1356,9 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
         </>)}
 
         {/* Product-level docs */}
-        {product && (product.labelFilePath || product.gaFilePath) && (<>
+        {product && (labelDocs.length > 0 || product.gaFilePath) && (<>
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", color: C.textTri, letterSpacing: 0.5, marginTop: 12, marginBottom: 6 }}>Product documents</div>
-          {product.labelFilePath && <FileDisplay label="Product Label / Artwork" filePath={product.labelFilePath} db={db} />}
+          {labelDocs.map((l, i) => <FileDisplay key={l.path || i} label={`Product Label / Artwork${labelDocs.length > 1 ? ` #${i + 1}` : ""}`} filePath={l.path} db={db} />)}
           {product.gaFilePath && <FileDisplay label="Guaranteed Analysis" filePath={product.gaFilePath} db={db} />}
         </>)}
 
@@ -1253,7 +1368,7 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
           {docs.filter(doc => {
             // Skip if it's already shown as a product-level doc (Label or GA)
             const lower = doc.name.toLowerCase();
-            if (product?.labelFilePath && (lower.includes("label") || lower.includes("artwork"))) return false;
+            if (labelDocs.length > 0 && (lower.includes("label") || lower.includes("artwork"))) return false;
             if (product?.gaFilePath && (lower.includes("guaranteed") || lower.includes("analysis"))) return false;
             return true;
           }).map((doc) => {
@@ -1262,7 +1377,7 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
           })}
         </>)}
 
-        {docs.length === 0 && !product?.labelFilePath && !product?.gaFilePath && !st?.registrationFormFile && !st?.registrationFormUrl && <p style={{ fontSize: 13, color: C.textTri, margin: 0 }}>No documents required for this state (configure in Library).</p>}
+        {docs.length === 0 && labelDocs.length === 0 && !product?.gaFilePath && !st?.registrationFormFile && !st?.registrationFormUrl && <p style={{ fontSize: 13, color: C.textTri, margin: 0 }}>No documents required for this state (configure in Library).</p>}
       </div>
 
       <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 16 }}>
@@ -1317,8 +1432,9 @@ function FileDisplay({ label, filePath, db }) {
 
 function NewRegModal({ open, onClose, onCreate, stateReqs, saving, db }) {
   const [name, setName] = useState(""); const [type, setType] = useState("Pet Treat"); const [desc, setDesc] = useState("");
-  const [labelFile, setLabelFile] = useState(null); const [gaFile, setGaFile] = useState(null);
-  const [uploadingLabel, setUploadingLabel] = useState(false); const [uploadingGa, setUploadingGa] = useState(false);
+  const [labels, setLabels] = useState([]); // [{ file, path }] — a product can have several label documents
+  const [gaFile, setGaFile] = useState(null);
+  const [uploadingLabelIdx, setUploadingLabelIdx] = useState(null); const [uploadingGa, setUploadingGa] = useState(false);
   const [selStates, setSelStates] = useState([]);
   const allCodes = Object.keys(stateReqs);
   const toggle = (c) => setSelStates(p => p.includes(c) ? p.filter(s => s !== c) : [...p, c]);
@@ -1332,22 +1448,21 @@ function NewRegModal({ open, onClose, onCreate, stateReqs, saving, db }) {
     reader.readAsDataURL(file);
   });
 
-  const [labelPath, setLabelPath] = useState("");
   const [gaPath, setGaPath] = useState("");
 
-  const handleLabelUpload = async (file) => {
+  const handleLabelUpload = async (file, idx = null) => {
     if (!db || !name) { alert("Enter a product name first."); return; }
-    setUploadingLabel(true);
+    const slot = idx === null ? labels.length : idx;
+    setUploadingLabelIdx(idx === null ? "new" : idx);
     try {
       const b64 = await fileToBase64(file);
       const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
       const ext = file.name.split(".").pop();
-      const path = `uploads/products/${slug}/label.${ext}`;
+      const path = `uploads/products/${slug}/${slot === 0 ? "label" : `label_${slot + 1}`}.${ext}`;
       await db.uploadFile(path, b64, `Upload label for ${name}`);
-      setLabelFile(file.name);
-      setLabelPath(path);
+      setLabels(prev => { const next = [...prev]; next[slot] = { file: file.name, path }; return next; });
     } catch (e) { alert("Upload failed: " + e.message); }
-    setUploadingLabel(false);
+    setUploadingLabelIdx(null);
   };
 
   const handleGaUpload = async (file) => {
@@ -1367,8 +1482,8 @@ function NewRegModal({ open, onClose, onCreate, stateReqs, saving, db }) {
 
   const handleCreate = () => {
     if (!valid) return;
-    onCreate({ name, type, description: desc, states: selStates, labelFile: labelFile || "", gaFile: gaFile || "", labelFilePath: labelPath, gaFilePath: gaPath });
-    setName(""); setType("Pet Treat"); setDesc(""); setSelStates([]); setLabelFile(null); setGaFile(null); setLabelPath(""); setGaPath("");
+    onCreate({ name, type, description: desc, states: selStates, labels, labelFile: labels[0]?.file || "", labelFilePath: labels[0]?.path || "", gaFile: gaFile || "", gaFilePath: gaPath });
+    setName(""); setType("Pet Treat"); setDesc(""); setSelStates([]); setLabels([]); setGaFile(null); setGaPath("");
     onClose();
   };
 
@@ -1384,7 +1499,10 @@ function NewRegModal({ open, onClose, onCreate, stateReqs, saving, db }) {
       <div style={{ marginBottom: 20 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}><I n="upload" s={16} c={C.primary} /><span style={{ fontWeight: 700, fontSize: 14 }}>Product Documents</span></div>
         {!name && <div style={{ fontSize: 12, color: C.orange, marginBottom: 8 }}>Enter a product name above before uploading files.</div>}
-        <FileUploadBtn label="Product Label / Artwork" fileName={labelFile} onUpload={handleLabelUpload} uploading={uploadingLabel} />
+        {labels.map((l, i) => (
+          <FileUploadBtn key={i} label={`Product Label / Artwork${labels.length > 1 ? ` #${i + 1}` : ""}`} fileName={l.file} filePath={l.path} onUpload={(f) => handleLabelUpload(f, i)} uploading={uploadingLabelIdx === i} db={db} />
+        ))}
+        <FileUploadBtn label={labels.length ? "Add another label document" : "Product Label / Artwork"} fileName={null} onUpload={(f) => handleLabelUpload(f, null)} uploading={uploadingLabelIdx === "new"} />
         <FileUploadBtn label="Guaranteed Analysis" fileName={gaFile} onUpload={handleGaUpload} uploading={uploadingGa} />
       </div>
 
@@ -1409,6 +1527,112 @@ function NewRegModal({ open, onClose, onCreate, stateReqs, saving, db }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// HISTORY OF RECORDS PAGE — everything submitted, organized by year
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function HistoryFileBtn({ filePath, db }) {
+  const [working, setWorking] = useState(false);
+  const handleDownload = async () => {
+    if (!db) return;
+    setWorking(true);
+    try {
+      const blob = await db.downloadFile(filePath);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filePath.split("/").pop();
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { alert("Download failed: " + e.message); }
+    setWorking(false);
+  };
+  return <button onClick={handleDownload} disabled={working} title={filePath.split("/").pop()} style={{ ...S.btn("outline"), padding: "6px 12px", fontSize: 12, flexShrink: 0 }}><I n="download" s={14} c={C.textSec} /> {working ? "..." : "File"}</button>;
+}
+
+function HistoryPage({ registrations, stateReqs, db }) {
+  const [fProduct, setFProduct] = useState("");
+  const [fState, setFState] = useState("");
+  const [fYear, setFYear] = useState("");
+
+  // Flatten every recorded action (Submitted / Approved / Rejected) across all registrations
+  const records = useMemo(() => {
+    const items = [];
+    registrations.forEach(r => {
+      Object.entries(r.approvals || {}).forEach(([key, a]) => {
+        if (!a?.status || a.status === "Not Started") return;
+        const year = a.year || parseInt(key.match(/_(\d{4})$/)?.[1] || "") || "—";
+        items.push({
+          id: `${r.id}_${key}`, productName: r.productName, state: r.state, stateName: r.stateName,
+          title: key.replace(/_\d{4}$/, ""), year, status: a.status, date: a.date || "",
+          file: a.file || "", filePath: a.filePath || "", comment: a.comment || "",
+        });
+      });
+    });
+    items.sort((x, y) => (y.date || "").localeCompare(x.date || ""));
+    return items;
+  }, [registrations]);
+
+  const productNames = useMemo(() => [...new Set(records.map(r => r.productName))].sort(), [records]);
+  const states = useMemo(() => [...new Set(records.map(r => r.state))].sort(), [records]);
+  const years = useMemo(() => [...new Set(records.map(r => String(r.year)))].sort().reverse(), [records]);
+
+  const filtered = records.filter(r => (!fProduct || r.productName === fProduct) && (!fState || r.state === fState) && (!fYear || String(r.year) === fYear));
+
+  const byYear = useMemo(() => {
+    const g = {};
+    filtered.forEach(r => { const y = String(r.year); if (!g[y]) g[y] = []; g[y].push(r); });
+    return Object.entries(g).sort(([a], [b]) => b.localeCompare(a));
+  }, [filtered]);
+
+  const recCfg = { Approved: { bg: C.greenLight, fg: C.green, bd: C.greenBorder }, Submitted: { bg: C.primaryLight, fg: C.primary, bd: C.primary + "40" }, Rejected: { bg: C.redLight, fg: C.red, bd: C.redBorder } };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 24 }}><h1 style={{ margin: 0, fontSize: 28, fontWeight: 800 }}>History of Records</h1><p style={{ margin: "4px 0 0", color: C.textSec, fontSize: 15 }}>Every filing you've submitted, organized by year</p></div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={fProduct} onChange={e => setFProduct(e.target.value)} style={{ ...S.select, width: 200 }}>
+          <option value="">All products</option>{productNames.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={fState} onChange={e => setFState(e.target.value)} style={{ ...S.select, width: 170 }}>
+          <option value="">All states</option>{states.map(s => <option key={s} value={s}>{stateReqs[s]?.name || s}</option>)}
+        </select>
+        <select value={fYear} onChange={e => setFYear(e.target.value)} style={{ ...S.select, width: 120 }}>
+          <option value="">All years</option>{years.map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", fontSize: 13, color: C.textSec }}>{filtered.length} record{filtered.length === 1 ? "" : "s"}</div>
+      </div>
+
+      {byYear.length === 0 && (
+        <div style={{ ...S.card, textAlign: "center", padding: 40, color: C.textTri }}>
+          No records yet. Deadlines you mark as Submitted, Approved, or Rejected will be archived here.
+        </div>
+      )}
+
+      {byYear.map(([year, items]) => (
+        <div key={year} style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.8, color: C.textTri, marginBottom: 10 }}>{year} <span style={{ color: C.textSec, fontWeight: 500 }}>— {items.length} record{items.length === 1 ? "" : "s"}</span></div>
+          <div style={{ ...S.card, padding: 0, overflow: "hidden" }}>
+            {items.map((rec, i) => (
+              <div key={rec.id} style={{ display: "flex", alignItems: "center", gap: 14, padding: "14px 18px", borderBottom: i < items.length - 1 ? `1px solid ${C.borderLight}` : "none" }}>
+                <div style={{ width: 80, flexShrink: 0, fontSize: 12, color: C.textSec }}>{rec.date || "—"}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>{rec.title}</div>
+                  <div style={{ fontSize: 12, color: C.textSec }}>{rec.productName} · {rec.stateName}</div>
+                  {rec.comment && <div style={{ fontSize: 12, color: C.red, fontStyle: "italic", marginTop: 2 }}>“{rec.comment}”</div>}
+                </div>
+                <Badge cfg={recCfg[rec.status] || statusCfg.Pending}>{rec.status}</Badge>
+                {rec.filePath && <HistoryFileBtn filePath={rec.filePath} db={db} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SIDEBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1422,7 +1646,7 @@ function Sidebar({ page, onNavigate, registrations, syncing, products, onEditPro
     return Object.fromEntries(Object.entries(m).map(([k, v]) => [k, [...v]]));
   }, [registrations]);
   const [openType, setOpenType] = useState(null);
-  const nav = [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "deadlines", label: "Deadlines", icon: "calendar" }, { id: "registrations", label: "Registrations", icon: "list" }, { id: "library", label: "State Library", icon: "library" }, { id: "settings", label: "Settings", icon: "settings" }];
+  const nav = [{ id: "dashboard", label: "Dashboard", icon: "dashboard" }, { id: "deadlines", label: "Deadlines", icon: "calendar" }, { id: "registrations", label: "Registrations", icon: "list" }, { id: "library", label: "State Library", icon: "library" }, { id: "history", label: "History of Records", icon: "clock" }, { id: "settings", label: "Settings", icon: "settings" }];
   return (
     <div style={{ width: 240, minHeight: "100vh", background: C.surface, borderRight: `1px solid ${C.border}`, padding: "20px 14px", display: "flex", flexDirection: "column", boxSizing: "border-box", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, padding: "0 8px" }}>
@@ -1468,20 +1692,19 @@ function Sidebar({ page, onNavigate, registrations, syncing, products, onEditPro
 
 function ProductEditModal({ productName, open, onClose, products, registrations, onSaveProduct, saving, db }) {
   const product = products.find(p => p.name === productName);
-  const [labelFile, setLabelFile] = useState("");
-  const [labelPath, setLabelPath] = useState("");
+  const [labels, setLabels] = useState([]); // [{ file, path }] — supports several label documents
   const [gaFile, setGaFile] = useState("");
   const [gaPath, setGaPath] = useState("");
   const [desc, setDesc] = useState("");
   const [type, setType] = useState("");
   const [legalCategory, setLegalCategory] = useState("");
-  const [uploadingLabel, setUploadingLabel] = useState(false);
+  const [uploadingLabelIdx, setUploadingLabelIdx] = useState(null);
   const [uploadingGa, setUploadingGa] = useState(false);
 
   useEffect(() => {
     if (product) {
-      setLabelFile(product.labelFile || "");
-      setLabelPath(product.labelFilePath || "");
+      // Migrate legacy single-label products into the labels array
+      setLabels(product.labels?.length ? product.labels.map(l => ({ ...l })) : (product.labelFilePath ? [{ file: product.labelFile || product.labelFilePath.split("/").pop(), path: product.labelFilePath }] : []));
       setGaFile(product.gaFile || "");
       setGaPath(product.gaFilePath || "");
       setDesc(product.description || "");
@@ -1499,19 +1722,19 @@ function ProductEditModal({ productName, open, onClose, products, registrations,
     reader.readAsDataURL(file);
   });
 
-  const handleLabelUpload = async (file) => {
+  const handleLabelUpload = async (file, idx = null) => {
     if (!db) return;
-    setUploadingLabel(true);
+    const slot = idx === null ? labels.length : idx;
+    setUploadingLabelIdx(idx === null ? "new" : idx);
     try {
       const b64 = await fileToBase64(file);
       const slug = productName.toLowerCase().replace(/[^a-z0-9]+/g, "_");
       const ext = file.name.split(".").pop();
-      const path = `uploads/products/${slug}/label.${ext}`;
+      const path = `uploads/products/${slug}/${slot === 0 ? "label" : `label_${slot + 1}`}.${ext}`;
       await db.uploadFile(path, b64, `Update label for ${productName}`);
-      setLabelFile(file.name);
-      setLabelPath(path);
+      setLabels(prev => { const next = [...prev]; next[slot] = { file: file.name, path }; return next; });
     } catch (e) { alert("Upload failed: " + e.message); }
-    setUploadingLabel(false);
+    setUploadingLabelIdx(null);
   };
 
   const handleGaUpload = async (file) => {
@@ -1530,7 +1753,7 @@ function ProductEditModal({ productName, open, onClose, products, registrations,
   };
 
   const handleSave = () => {
-    onSaveProduct({ ...product, description: desc, type, legalCategory, labelFile, labelFilePath: labelPath, gaFile, gaFilePath: gaPath });
+    onSaveProduct({ ...product, description: desc, type, legalCategory, labels, labelFile: labels[0]?.file || "", labelFilePath: labels[0]?.path || "", gaFile, gaFilePath: gaPath });
   };
 
   const productRegs = registrations.filter(r => r.productName === productName);
@@ -1560,7 +1783,10 @@ function ProductEditModal({ productName, open, onClose, products, registrations,
 
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}><I n="file" s={16} c={C.teal} /><span style={{ fontWeight: 700, fontSize: 14 }}>Product Documents</span></div>
-        <FileUploadBtn label="Product Label / Artwork" fileName={labelFile} filePath={labelPath} onUpload={handleLabelUpload} uploading={uploadingLabel} db={db} />
+        {labels.map((l, i) => (
+          <FileUploadBtn key={i} label={`Product Label / Artwork${labels.length > 1 ? ` #${i + 1}` : ""}`} fileName={l.file} filePath={l.path} onUpload={(f) => handleLabelUpload(f, i)} uploading={uploadingLabelIdx === i} db={db} />
+        ))}
+        <FileUploadBtn label={labels.length ? "Add another label document" : "Product Label / Artwork"} fileName={null} onUpload={(f) => handleLabelUpload(f, null)} uploading={uploadingLabelIdx === "new"} />
         <FileUploadBtn label="Guaranteed Analysis" fileName={gaFile} filePath={gaPath} onUpload={handleGaUpload} uploading={uploadingGa} db={db} />
       </div>
 
@@ -1615,6 +1841,8 @@ export default function App() {
   const enrichRegs = useCallback((regs, stReqs) => {
     const now = new Date();
     return regs.map(r => {
+      // States where registration isn't required have no deadlines to track
+      if (r.status === "Not Required") return { ...r, daysLeft: 999, priority: "Low", upcomingDeadlines: [], nearestDeadlineLabel: null };
       // Get deadlines from the state config
       const stateData = stReqs?.[r.state];
       const stateDeadlines = stateData?.deadlines || [];
@@ -1668,7 +1896,8 @@ export default function App() {
     setLoading(true);
     try {
       const [regs, prods, sreqs, sett] = await Promise.all([database.read("data/registrations.json"), database.read("data/products.json"), database.read("data/state-offices.json"), database.read("data/settings.json")]);
-      const sr = sreqs || DEFAULT_STATES;
+      // Merge over defaults so all 51 states always exist, even if the data file predates some of them
+      const sr = { ...DEFAULT_STATES, ...(sreqs || {}) };
       const statesWithDeadlines = Object.entries(sr).filter(([,s]) => s.deadlines?.length > 0).length;
       log("LoadData", `${(regs||[]).length} regs, ${(prods||[]).length} products, ${statesWithDeadlines} states with deadlines`);
       setStateReqs(sr);
@@ -1705,7 +1934,7 @@ export default function App() {
   }, [db]);
 
   // Create registrations — per-state deadlines, product files
-  const handleCreate = async ({ name, type, description, states, labelFile, gaFile, labelFilePath, gaFilePath }) => {
+  const handleCreate = async ({ name, type, description, states, labels, labelFile, gaFile, labelFilePath, gaFilePath }) => {
     setSyncing(true);
     const now = new Date();
     const newRegs = states.map((st, i) => {
@@ -1718,7 +1947,7 @@ export default function App() {
       };
     });
     const all = [...registrations.map(({ daysLeft, priority, ...r }) => r), ...newRegs];
-    if (!products.find(p => p.name === name)) await saveProducts([...products, { name, type, description, labelFile, gaFile, labelFilePath: labelFilePath || "", gaFilePath: gaFilePath || "", createdAt: now.toISOString().split("T")[0] }]);
+    if (!products.find(p => p.name === name)) await saveProducts([...products, { name, type, description, labels: labels || [], labelFile, gaFile, labelFilePath: labelFilePath || "", gaFilePath: gaFilePath || "", createdAt: now.toISOString().split("T")[0] }]);
     await saveRegs(all); setSyncing(false);
   };
 
@@ -1837,6 +2066,7 @@ export default function App() {
           {page === "deadlines" && <DeadlinesPage registrations={registrations} stateReqs={stateReqs} onAction={handleAction} onEditProduct={setEditProductName} />}
           {page === "registrations" && <ProductsPage registrations={registrations} stateReqs={stateReqs} products={products} onEditProduct={setEditProductName} onBulkUpdate={handleBulkUpdate} onUpdateRegStatus={handleUpdateRegStatus} saving={syncing} onNewReg={() => setShowNewReg(true)} />}
           {page === "library" && <LibraryPage stateReqs={stateReqs} onSaveState={handleSaveState} onBulkSave={handleBulkSave} saving={syncing} db={db} />}
+          {page === "history" && <HistoryPage registrations={registrations} stateReqs={stateReqs} db={db} />}
           {page === "settings" && <SettingsPage settings={settings} onSave={handleSaveSettings} products={products} config={config} saving={syncing} activityLog={activityLog} onClearLog={() => setActivityLog([])} />}
         </>)}
       </div>
