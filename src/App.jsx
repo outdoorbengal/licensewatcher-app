@@ -124,7 +124,6 @@ const S = {
   select: { padding: "10px 14px", borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 14, fontFamily: "inherit", outline: "none", background: C.surface, color: C.text, cursor: "pointer", appearance: "none", backgroundImage: `url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235B616E' stroke-width='2.5'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`, backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center", paddingRight: 36 },
 };
 const statusCfg = { Pending: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, "In Review": { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Approved: { bg: C.greenLight, fg: C.green, bd: C.greenBorder }, Expired: { bg: C.greyLight, fg: C.grey, bd: C.greyBorder }, Rejected: { bg: C.redLight, fg: C.red, bd: C.redBorder } };
-const priorityCfg = { Critical: { bg: C.redLight, fg: C.red, bd: C.redBorder }, High: { bg: C.orangeLight, fg: C.orange, bd: C.orangeBorder }, Medium: { bg: C.purpleLight, fg: C.purple, bd: C.purpleBorder }, Low: { bg: C.greenLight, fg: C.green, bd: C.greenBorder } };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ICONS
@@ -148,14 +147,12 @@ const I = ({ n, s = 18, c = C.textSec, st = {} }) => {
     chevronDown: <><polyline points="6 9 12 15 18 9"/></>,
     printer: <><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></>,
     mapPin: <><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></>,
-    dollar: <><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>,
     trending: <><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>,
+    link: <><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></>,
     cat: <><path d="M12 5c-1.5-2.5-4-3-5-2s-1 3.5 0 5c-2 1-3 3-3 5 0 3.5 3.5 6 8 6s8-2.5 8-6c0-2-1-4-3-5 1-1.5 1-4 0-5s-3.5-.5-5 2z"/><circle cx="9.5" cy="13" r="1"/><circle cx="14.5" cy="13" r="1"/><path d="M10 16.5c.5.5 1.5 1 2 1s1.5-.5 2-1"/></>,
     github: <><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></>,
-    trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
     edit: <><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>,
     zap: <><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></>,
-    shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></>,
     download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></>,
     calendar: <><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></>,
   };
@@ -167,12 +164,6 @@ const I = ({ n, s = 18, c = C.textSec, st = {} }) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function Badge({ children, cfg }) { return <span style={S.badge(cfg.bg, cfg.fg, cfg.bd)}>{children}</span>; }
-function Progress({ cur, tot, size = "md" }) {
-  const pct = tot > 0 ? (cur / tot) * 100 : 0;
-  const clr = pct === 100 ? C.green : pct >= 50 ? C.primary : C.orange;
-  const h = size === "sm" ? 4 : 6;
-  return (<div style={{ display: "flex", alignItems: "center", gap: 8 }}><div style={{ flex: 1, height: h, borderRadius: h, background: C.borderLight, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", borderRadius: h, background: clr, transition: "width 0.4s ease" }} /></div><span style={{ fontSize: 12, fontWeight: 600, color: clr, minWidth: 36, textAlign: "right" }}>{cur}/{tot}</span></div>);
-}
 function StatCard({ label, value, sub, icon, accent }) {
   return (<div style={{ ...S.card, padding: 20, display: "flex", alignItems: "center", gap: 16, flex: 1, minWidth: 170 }}><div style={{ width: 44, height: 44, borderRadius: 12, background: accent + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><I n={icon} s={22} c={accent} /></div><div><div style={{ fontSize: 26, fontWeight: 700, color: C.text, lineHeight: 1.1 }}>{value}</div><div style={{ fontSize: 13, color: C.textSec, marginTop: 2 }}>{label}</div>{sub && <div style={{ fontSize: 11, color: accent, fontWeight: 600, marginTop: 2 }}>{sub}</div>}</div></div>);
 }
@@ -666,18 +657,6 @@ function ProductsPage({ registrations, stateReqs, products, onEditProduct, onBul
 // STATE LIBRARY PAGE — fully editable
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// Helper: try to parse date text like "2026-01-01" or "January 1" into {month, day}
-function parseDateText(text) {
-  if (!text) return null;
-  // Try YYYY-MM-DD
-  const isoMatch = text.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (isoMatch) return { month: parseInt(isoMatch[2]), day: parseInt(isoMatch[3]) };
-  // Try MM/DD or MM-DD
-  const slashMatch = text.match(/^(\d{1,2})[\/\-](\d{1,2})/);
-  if (slashMatch) return { month: parseInt(slashMatch[1]), day: parseInt(slashMatch[2]) };
-  return null;
-}
-
 function LibraryPage({ stateReqs, onSaveState, onBulkSave, saving, db }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null);
@@ -997,7 +976,6 @@ function SettingsPage({ settings, onSave, products, config, saving, activityLog,
 function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, saving, db, products }) {
   const [docs, setDocs] = useState([]);
   const [status, setStatus] = useState("");
-  const [deadline, setDeadline] = useState("");
   const [notes, setNotes] = useState("");
   const [uploadingIdx, setUploadingIdx] = useState(-1);
   const [approvalFile, setApprovalFile] = useState(null);
@@ -1010,7 +988,6 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
     if (reg) {
       setDocs(reg.documents?.map(d => ({ ...d })) || []);
       setStatus(reg.status);
-      setDeadline(reg.deadline || "");
       setNotes(reg.notes || "");
       setApprovalFile(null);
       setApprovalFilePath("");
@@ -1066,15 +1043,6 @@ function ActionModal({ reg, deadlineCtx, open, onClose, onUpdate, stateReqs, sav
       setApprovalFilePath(path);
     } catch (e) { alert("Upload failed: " + e.message); }
     setUploadingApproval(false);
-  };
-
-  const handleStatusClick = (s) => {
-    if (s === "Approved" && deadlineCtx) {
-      // When acting on a specific deadline, "Approved" means approve THIS deadline only
-      setShowApprovalPrompt(true);
-      return; // Don't change overall reg status
-    }
-    setStatus(s);
   };
 
   const handleSave = () => {
@@ -1644,14 +1612,6 @@ export default function App() {
 
   const showToast = (msg, type = "success") => { setToast({ message: msg, type, key: Date.now() }); log(type === "error" ? "Error" : "Success", msg, type === "error" ? "error" : "info"); };
 
-  // Helper: get next occurrence of a month/day deadline
-  const getNextOccurrence = useCallback((month, day) => {
-    const now = new Date();
-    const thisYear = new Date(now.getFullYear(), month - 1, day);
-    const nextYear = new Date(now.getFullYear() + 1, month - 1, day);
-    return thisYear >= now ? thisYear : nextYear;
-  }, []);
-
   const enrichRegs = useCallback((regs, stReqs) => {
     const now = new Date();
     return regs.map(r => {
@@ -1768,13 +1728,6 @@ export default function App() {
     const { daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...clean } = updated;
     const newRegs = registrations.map(r => r.id === updated.id ? clean : (() => { const { daysLeft: dl, priority: pr, upcomingDeadlines: ud, nearestDeadlineLabel: ndl, ...rest } = r; return rest; })());
     await saveRegs(newRegs); closeAction(); setSyncing(false);
-  };
-
-  const handleDelete = async (id) => {
-    if (!confirm("Delete this registration?")) return;
-    log("Delete", `Registration ${id}`);
-    const newRegs = registrations.filter(r => r.id !== id).map(({ daysLeft, priority, upcomingDeadlines, nearestDeadlineLabel, ...r }) => r);
-    await saveRegs(newRegs);
   };
 
   // Wrapper for opening Action modal with optional deadline context
